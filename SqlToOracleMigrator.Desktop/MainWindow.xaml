@@ -1,0 +1,252 @@
+<Window x:Class="SqlToOracleMigrator.Desktop.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="clr-namespace:SqlToOracleMigrator.Desktop.ViewModels"
+        xmlns:conv="clr-namespace:SqlToOracleMigrator.Desktop.Converters"
+        Title="SQL Server → Oracle Migrator" Height="900" Width="1400"
+        WindowStartupLocation="CenterScreen">
+    <Window.Resources>
+        <conv:StatusToBrushConverter x:Key="StatusToBrushConverter" />
+        <conv:BoolToVisibilityConverter x:Key="BoolToVisibilityConverter" />
+    </Window.Resources>
+
+    <Window.DataContext>
+        <vm:MainViewModel />
+    </Window.DataContext>
+
+    <DockPanel>
+        <!-- Top action bar -->
+        <Border DockPanel.Dock="Top" Background="#F3F3F3" BorderBrush="#D0D0D0" BorderThickness="0,0,0,1" Padding="8">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <Button Grid.Column="0" Margin="0,0,8,0" Padding="10,6"
+                        Command="{Binding NewConnectionCommand}">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="＋" FontSize="16" Margin="0,0,6,0"/>
+                        <TextBlock Text="New Database Connection"/>
+                    </StackPanel>
+                </Button>
+
+                <Button Grid.Column="1" Margin="0,0,8,0" Padding="10,6"
+                        Command="{Binding OpenLogsFolderCommand}">
+                    <TextBlock Text="Open Logs Folder"/>
+                </Button>
+
+                <Button Grid.Column="2" Margin="0,0,8,0" Padding="10,6"
+                        Command="{Binding RefreshInventoryCommand}">
+                    <TextBlock Text="Refresh Inventory"/>
+                </Button>
+
+                <TextBlock Grid.Column="4" VerticalAlignment="Center" Foreground="#666"
+                           Text="{Binding StatusText}" />
+            </Grid>
+        </Border>
+
+        <!-- Main layout -->
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="220"/>
+            </Grid.RowDefinitions>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="320"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- Connections panel -->
+            <Border Grid.Row="0" Grid.RowSpan="2" Grid.Column="0"
+                    BorderBrush="#D0D0D0" BorderThickness="0,0,1,0">
+                <DockPanel>
+                    <TextBlock DockPanel.Dock="Top" Text="Connections"
+                               FontWeight="SemiBold" FontSize="14"
+                               Padding="10,10,10,6"/>
+                    <TreeView ItemsSource="{Binding ConnectionGroups}" Margin="6"
+                              SelectedItemChanged="ConnectionsTree_SelectedItemChanged">
+                        <TreeView.Resources>
+                            <HierarchicalDataTemplate DataType="{x:Type vm:TreeGroupNodeViewModel}" ItemsSource="{Binding Children}">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold"/>
+                                </StackPanel>
+                            </HierarchicalDataTemplate>
+
+                            <HierarchicalDataTemplate DataType="{x:Type vm:ConnectionNodeViewModel}" ItemsSource="{Binding Children}">
+	                                <StackPanel Orientation="Horizontal">
+	                                    <StackPanel.ContextMenu>
+	                                        <ContextMenu>
+	                                            <MenuItem Header="Connect" Command="{Binding ConnectCommand}"/>
+	                                            <MenuItem Header="Disconnect" Command="{Binding DisconnectCommand}"/>
+	                                            <MenuItem Header="Reset" Command="{Binding ResetCommand}"/>
+	                                            <Separator/>
+	                                            <MenuItem Header="Remove" Command="{Binding RemoveCommand}"/>
+	                                            <MenuItem Header="Open Config Folder" Command="{Binding OpenConfigFolderCommand}"/>
+	                                        </ContextMenu>
+	                                    </StackPanel.ContextMenu>
+	                                    <Ellipse Width="10" Height="10" Margin="0,0,6,0"
+	                                             Fill="{Binding Status, Converter={StaticResource StatusToBrushConverter}}"/>
+	                                    <TextBlock Text="{Binding DisplayName}"/>
+	                                </StackPanel>
+                            </HierarchicalDataTemplate>
+
+                            <HierarchicalDataTemplate DataType="{x:Type vm:DatabaseNodeViewModel}" ItemsSource="{Binding Children}">
+	                                <StackPanel Orientation="Horizontal">
+	                                    <StackPanel.ContextMenu>
+	                                        <ContextMenu>
+	                                            <MenuItem Header="Migrate data"
+	                                                      Command="{Binding MigrateDataCommand}"
+	                                                      Visibility="{Binding IsSqlDatabaseNode, Converter={StaticResource BoolToVisibilityConverter}}"/>
+	                                        </ContextMenu>
+	                                    </StackPanel.ContextMenu>
+	                                    <TextBlock Text="{Binding DisplayName}"/>
+	                                </StackPanel>
+                            </HierarchicalDataTemplate>
+                        </TreeView.Resources>
+                    </TreeView>
+                </DockPanel>
+            </Border>
+
+            <!-- Combined inventory -->
+            <Border Grid.Row="0" Grid.Column="1" Padding="10">
+                <DockPanel>
+                    <TextBlock DockPanel.Dock="Top" Text="Combined Inventory (read-only)"
+                               FontWeight="SemiBold" FontSize="14"
+                               Padding="0,0,0,8"/>
+                    <DataGrid ItemsSource="{Binding InventoryRows}"
+                              AutoGenerateColumns="False"
+                              CanUserAddRows="False"
+                              CanUserDeleteRows="False"
+                              IsReadOnly="True"
+                              HeadersVisibility="Column"
+                              EnableRowVirtualization="True"
+                              EnableColumnVirtualization="True"
+                              VirtualizingPanel.IsVirtualizing="True"
+                              VirtualizingPanel.VirtualizationMode="Recycling"
+                              RowDetailsVisibilityMode="Visible"
+                              SelectionMode="Single">
+                        <DataGrid.RowStyle>
+                            <Style TargetType="DataGridRow">
+                                <Setter Property="DetailsVisibility" Value="Collapsed"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsExpanded}" Value="True">
+                                        <Setter Property="DetailsVisibility" Value="Visible"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </DataGrid.RowStyle>
+
+                        <DataGrid.RowDetailsTemplate>
+                            <DataTemplate>
+                                <Border BorderBrush="#D0D0D0" BorderThickness="1" Margin="0,6,0,6" Padding="8">
+                                    <DockPanel>
+                                        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,6">
+                                            <TextBlock Text="Objects" FontWeight="SemiBold"/>
+                                            <TextBlock Text="{Binding ObjectsCountLabel}" Margin="8,0,0,0" Foreground="#666"/>
+                                            <TextBlock Text="Loading..." Margin="12,0,0,0" Foreground="#666"
+                                                       Visibility="{Binding IsLoadingObjects, Converter={StaticResource BoolToVisibilityConverter}}"/>
+                                        </StackPanel>
+
+                                        <DataGrid ItemsSource="{Binding Objects}"
+                                                  AutoGenerateColumns="False"
+                                                  CanUserAddRows="False"
+                                                  CanUserDeleteRows="False"
+                                                  IsReadOnly="True"
+                                                  HeadersVisibility="Column"
+                                                  EnableRowVirtualization="True"
+                                                  EnableColumnVirtualization="True"
+                                                  VirtualizingPanel.IsVirtualizing="True"
+                                                  VirtualizingPanel.VirtualizationMode="Recycling"
+                                                  MaxHeight="360">
+                                            <DataGrid.Columns>
+                                                <DataGridTemplateColumn Header="" Width="40">
+                                                    <DataGridTemplateColumn.HeaderTemplate>
+                                                        <DataTemplate>
+                                                            <Button Content="▶" Width="26" Height="24" Padding="0"
+                                                                    ToolTip="Load more rows"
+                                                                    Command="{Binding LoadMoreCommand}"
+                                                                    Visibility="{Binding HasMoreObjects, Converter={StaticResource BoolToVisibilityConverter}}"/>
+                                                        </DataTemplate>
+                                                    </DataGridTemplateColumn.HeaderTemplate>
+                                                    <DataGridTemplateColumn.CellTemplate>
+                                                        <DataTemplate>
+                                                            <TextBlock/>
+                                                        </DataTemplate>
+                                                    </DataGridTemplateColumn.CellTemplate>
+                                                </DataGridTemplateColumn>
+                                                <DataGridTextColumn Header="Schema" Binding="{Binding Schema}" Width="140"/>
+                                                <DataGridTextColumn Header="Object Name" Binding="{Binding ObjectName}" Width="220"/>
+                                                <DataGridTextColumn Header="Type" Binding="{Binding ObjectType}" Width="120"/>
+                                                <DataGridTextColumn Header="Rows" Binding="{Binding EstimatedRows}" Width="100"/>
+                                                <DataGridTextColumn Header="Size (MB)" Binding="{Binding EstimatedSizeMb}" Width="100"/>
+                                                <DataGridTextColumn Header="Created" Binding="{Binding CreatedDate}" Width="160"/>
+                                                <DataGridTextColumn Header="Modified" Binding="{Binding LastModifiedDate}" Width="160"/>
+                                                <DataGridTextColumn Header="Depends On" Binding="{Binding DependsOnCount}" Width="90"/>
+                                                <DataGridTextColumn Header="Depended By" Binding="{Binding DependedByCount}" Width="90"/>
+                                                <DataGridTextColumn Header="Complexity" Binding="{Binding ComplexityScore}" Width="90"/>
+                                                <DataGridTextColumn Header="Status" Binding="{Binding MigrationStatus}" Width="120"/>
+                                            </DataGrid.Columns>
+                                        </DataGrid>
+                                    </DockPanel>
+                                </Border>
+                            </DataTemplate>
+                        </DataGrid.RowDetailsTemplate>
+
+                        <DataGrid.Columns>
+                            <DataGridTemplateColumn Header="" Width="40">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <ToggleButton IsChecked="{Binding IsExpanded}" Content="▸" Width="26" Height="22"/>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+
+                            <DataGridTextColumn Header="Side" Binding="{Binding Side}" Width="80"/>
+                            <DataGridTextColumn Header="Engine" Binding="{Binding Engine}" Width="140"/>
+                            <DataGridTextColumn Header="Database/Service" Binding="{Binding DatabaseOrService}" Width="220"/>
+                            <DataGridTextColumn Header="Default Schema/User" Binding="{Binding DefaultSchemaOrUser}" Width="160"/>
+                            <DataGridTextColumn Header="DB Size (GB)" Binding="{Binding DatabaseSizeGb}" Width="110"/>
+                            <DataGridTextColumn Header="Data Size (GB)" Binding="{Binding DataSizeGb}" Width="110"/>
+                            <DataGridTextColumn Header="Log/Redo (GB)" Binding="{Binding LogOrRedoSizeGb}" Width="110"/>
+                            <DataGridTextColumn Header="#Schemas" Binding="{Binding SchemaCount}" Width="90"/>
+                            <DataGridTextColumn Header="#Tables" Binding="{Binding TableCount}" Width="90"/>
+                            <DataGridTextColumn Header="#Views" Binding="{Binding ViewCount}" Width="90"/>
+                            <DataGridTextColumn Header="#Procs" Binding="{Binding ProcedureCount}" Width="90"/>
+                            <DataGridTextColumn Header="#Funcs" Binding="{Binding FunctionCount}" Width="90"/>
+                            <DataGridTextColumn Header="#Seq" Binding="{Binding SequenceCount}" Width="70"/>
+                            <DataGridTextColumn Header="#Syn" Binding="{Binding SynonymCount}" Width="70"/>
+                            <DataGridTextColumn Header="#Trig" Binding="{Binding TriggerCount}" Width="70"/>
+                            <DataGridTextColumn Header="#Idx" Binding="{Binding IndexCount}" Width="70"/>
+                            <DataGridTextColumn Header="Last Stats Update" Binding="{Binding LastStatsUpdate}" Width="180"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </DockPanel>
+            </Border>
+
+            <!-- Logs -->
+            <Border Grid.Row="1" Grid.Column="1" BorderBrush="#D0D0D0" BorderThickness="1,1,0,0" Padding="10">
+                <DockPanel>
+                    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,6">
+                        <TextBlock Text="Logs" FontWeight="SemiBold" FontSize="14"/>
+                        <ProgressBar Width="220" Height="16" Margin="12,2,0,0" Minimum="0" Maximum="100"
+                                     Value="{Binding MigrationProgressPercent}"/>
+                        <TextBlock Text="{Binding MigrationStageText}" Margin="8,0,0,0" Foreground="#666" VerticalAlignment="Center"/>
+                        <Button Content="Clear" Margin="12,0,0,0" Padding="10,2" Command="{Binding ClearLogsCommand}"/>
+                    </StackPanel>
+
+                    <ListBox ItemsSource="{Binding LogEntries}">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding}" TextWrapping="Wrap"/>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                </DockPanel>
+            </Border>
+        </Grid>
+    </DockPanel>
+</Window>

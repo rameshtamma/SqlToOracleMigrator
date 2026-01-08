@@ -1,0 +1,47 @@
+{
+  "Tables": [
+    "discover",
+    "mapColumns",
+    "generateDdl",
+    "deployDdl",
+    "preValidateData",
+    "migrateData",
+    "postValidateData"
+  ],
+  "Views": [
+    "discover",
+    "convertBody",
+    "deploy"
+  ],
+  "Procedures": [
+    "discover",
+    "convertBody",
+    "deploy"
+  ],
+  "Functions": [
+    "discover",
+    "convertBody",
+    "deploy"
+  ],
+  "Synonyms": [
+    "discover",
+    "deploy"
+  ],
+  "Sequences": [
+    "discover",
+    "deploy"
+  ],
+  "Types": [
+    "discover",
+    "deploy"
+  ],
+  "Triggers": [
+    "discover",
+    "convertBody",
+    "deploy"
+  ],
+  "Indexes": [
+    "discover",
+    "deploy"
+  ]
+}

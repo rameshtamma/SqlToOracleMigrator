@@ -1,0 +1,369 @@
+# DB Conversion Master Template (Template-Driven Migration) — v1
+# -------------------------------------------------------------------------
+# Purpose
+#   A general, "master script" template that drives a
+#   conversion/migration run inside a Migration UI.
+#
+# How to use
+#   1) Copy this file and set the placeholders in the [PLACEHOLDERS] section.
+#   2) For each Stage, fill in the action scripts or connect them to tool actions.
+#   3) The Migration UI reads this template and renders stages as steps.
+#   4) The tool produces:
+#        - Convert_<SRC>_To_<TGT>.log (mirrored stage log)
+#        - ddl_validation_report.json (optional)
+#        - data_validation_report.json (optional)
+#        - master_generated.sql (optional, if tool compiles a runnable script)
+#
+# Notes
+#   - Not intended to be identical; it provides the same “stage prompt + ordered actions” model.
+#   - Keep scripts idempotent when possible (CREATE IF NOT EXISTS / handle already-exists).
+#
+# -------------------------------------------------------------------------
+# [PLACEHOLDERS]  (Fill these before running)
+# -------------------------------------------------------------------------
+# Required
+#   {{SRC_DBMS}}             e.g., SQLSERVER | POSTGRES | MYSQL | ORACLE | DB2
+#   {{TGT_DBMS}}             e.g., ORACLE | SQLSERVER | POSTGRES | MYSQL | DB2
+#   {{SRC_DB_NAME}}          e.g., AdventureWorks2025
+#   {{TGT_DB_NAME}}          e.g., AdventureWorks2025_Orc  (or same as source)
+#   {{RUN_ID}}               unique run id, e.g. run_20260105_101500
+#   {{RUN_TAG}}              short label, e.g. DevLane | UAT | ProdDryRun
+#   {{LOG_DIR}}              output folder, e.g. Logs/20260105/{{RUN_ID}}
+#
+# Connections (referenced by the tool)
+#   {{SRC_CONN}}             name of saved source connection in your app
+#   {{TGT_ADMIN_CONN}}       name of saved target admin connection in your app
+#   {{TGT_WORK_CONN}}        optional: work connection if different from admin
+#
+# Security / schema strategy
+#   {{SCHEMA_STRATEGY}}      SINGLE_SCHEMA | MULTI_SCHEMA_CLONE
+#   {{TGT_SCHEMA}}           used only when SCHEMA_STRATEGY=SINGLE_SCHEMA
+#   {{AUTO_CREATE_SCHEMAS}}  true|false (if MULTI_SCHEMA_CLONE, auto-provision users/schemas)
+#   {{ROLE_NAME}}            e.g., ROLE_CONVERT_{{SRC_DBMS}}_TO_{{TGT_DBMS}}
+#
+# Validation settings
+#   {{ENABLE_DDL_VALIDATION}}    true|false  (Data Def Validation stage)
+#   {{ENABLE_DATA_VALIDATION}}   true|false  (Data Validation stage)
+#   {{DATA_VALIDATE_ROW_LIMIT}}  integer (default 5000). Use 0 for ALL ROWS
+#   {{VALIDATE_ALL_ON_DEMAND}}   true|false (UI can override to run all rows)
+#
+# Dependency/ordering knobs
+#   {{ORDER_TABLES_BY_FK}}     true|false
+#   {{ORDER_CONSTRAINTS}}      PK -> CHECK -> INDEX -> FK  (default)
+#
+# Data load knobs
+#   {{DOP}}                    degree of parallelism, e.g. 4
+#   {{BATCH_SIZE}}             bulk batch size, e.g. 2000
+#
+# -------------------------------------------------------------------------
+# [EXECUTION ENVIRONMENT] (Optional; can be treated as comments by the tool)
+# -------------------------------------------------------------------------
+# If your tool compiles this template into a runnable script (e.g., SQL*Plus / psql),
+# keep these directives. Otherwise, they serve as stage metadata for the UI.
+
+SET ECHO ON
+SET VERIFY ON
+SET FEEDBACK ON
+SET DEFINE ON
+SET SERVEROUTPUT ON SIZE UNLIMITED
+
+-- Tool should inject/define RUN_ID in its own scripting host
+DEFINE filename="{{RUN_ID}}"
+
+--  spool (tool may implement this as a log mirror)
+SPOOL "{{LOG_DIR}}/Convert_{{SRC_DBMS}}_To_{{TGT_DBMS}}_&filename..log"
+
+PROMPT ==============================================================
+PROMPT START {{SRC_DBMS}} -> {{TGT_DBMS}} CONVERSION  ({{RUN_TAG}})
+PROMPT SOURCE={{SRC_DB_NAME}}  TARGET={{TGT_DB_NAME}}  RUN={{RUN_ID}}
+PROMPT ==============================================================
+PROMPT
+
+# -------------------------------------------------------------------------
+# [UTILITY LIBRARY] (Embed minimal utilities used by stages)
+# -------------------------------------------------------------------------
+# The goal is to centralize conversion helpers and error handling.
+# The tool can:
+#   - Execute this section once on the target (preferred)
+#   - Or inline equivalent utilities in generated scripts
+#
+# Template pattern:
+#   UTILS.* functions emulate source dialect built-ins when needed (e.g. DATEADD, DATEDIFF, IDENTITY).
+#   UTILS.LOG / UTILS.HANDLE_ERROR standardize log + exception output.
+
+PROMPT [UTIL] Installing compatibility utilities (placeholder)
+
+-- === BEGIN TARGET-UTILITY SECTION ===
+-- NOTE: Below is an Oracle-style example. For other targets, replace with equivalent constructs.
+
+-- {{TGT_DBMS}}_UTILS_INSTALL_BEGIN
+/*
+
+-- Example (Oracle): create a UTILS package
+-- Replace with your target DB scripting language if needed.
+
+CREATE OR REPLACE PACKAGE UTILS AS
+  PROCEDURE LOG(p_level IN VARCHAR2, p_msg IN VARCHAR2);
+  PROCEDURE HANDLE_ERROR(p_code IN NUMBER, p_msg IN VARCHAR2, p_stage IN VARCHAR2, p_object IN VARCHAR2);
+
+  -- Compatibility helpers (fill based on source dialect)
+  FUNCTION DATEADD(p_datepart IN VARCHAR2, p_number IN NUMBER, p_date IN DATE) RETURN DATE;
+  FUNCTION DATEDIFF(p_datepart IN VARCHAR2, p_start IN DATE, p_end IN DATE) RETURN NUMBER;
+
+  -- Identity emulation (if source uses IDENTITY/AUTO_INCREMENT and target needs help)
+  FUNCTION IDENTITY(p_key IN VARCHAR2, p_seed IN NUMBER DEFAULT 1, p_increment IN NUMBER DEFAULT 1) RETURN NUMBER;
+  PROCEDURE IDENTITY_RESET(p_key IN VARCHAR2);
+
+  -- Safe cast
+  FUNCTION TRY_CAST_NUMBER(p_str IN VARCHAR2) RETURN NUMBER;
+
+  -- DDL parse/validation (used by Data Def Validation)
+  PROCEDURE PARSE_DDL(p_ddl IN CLOB);
+END UTILS;
+/
+
+CREATE OR REPLACE PACKAGE BODY UTILS AS
+  PROCEDURE LOG(p_level IN VARCHAR2, p_msg IN VARCHAR2) IS
+  BEGIN
+    DBMS_OUTPUT.PUT_LINE('['||p_level||'] '||p_msg);
+  END;
+
+  PROCEDURE HANDLE_ERROR(p_code IN NUMBER, p_msg IN VARCHAR2, p_stage IN VARCHAR2, p_object IN VARCHAR2) IS
+  BEGIN
+    DBMS_OUTPUT.PUT_LINE('[ERROR] stage='||p_stage||' obj='||p_object||' code='||p_code||' msg='||p_msg);
+  END;
+
+  FUNCTION DATEADD(p_datepart IN VARCHAR2, p_number IN NUMBER, p_date IN DATE) RETURN DATE IS
+  BEGIN
+    -- Placeholder: implement as needed per source dialect
+    RETURN p_date + p_number;
+  END;
+
+  FUNCTION DATEDIFF(p_datepart IN VARCHAR2, p_start IN DATE, p_end IN DATE) RETURN NUMBER IS
+  BEGIN
+    RETURN (p_end - p_start);
+  END;
+
+  FUNCTION IDENTITY(p_key IN VARCHAR2, p_seed IN NUMBER DEFAULT 1, p_increment IN NUMBER DEFAULT 1) RETURN NUMBER IS
+  BEGIN
+    -- Placeholder: implement with sequences / identity columns as appropriate
+    RETURN p_seed;
+  END;
+
+  PROCEDURE IDENTITY_RESET(p_key IN VARCHAR2) IS
+  BEGIN
+    NULL;
+  END;
+
+  FUNCTION TRY_CAST_NUMBER(p_str IN VARCHAR2) RETURN NUMBER IS
+    v NUMBER;
+  BEGIN
+    v := TO_NUMBER(p_str);
+    RETURN v;
+  EXCEPTION WHEN OTHERS THEN
+    RETURN NULL;
+  END;
+
+  PROCEDURE PARSE_DDL(p_ddl IN CLOB) IS
+    c INTEGER;
+  BEGIN
+    c := DBMS_SQL.OPEN_CURSOR;
+    DBMS_SQL.PARSE(c, p_ddl, DBMS_SQL.NATIVE);
+    DBMS_SQL.CLOSE_CURSOR(c);
+  EXCEPTION WHEN OTHERS THEN
+    IF DBMS_SQL.IS_OPEN(c) THEN DBMS_SQL.CLOSE_CURSOR(c); END IF;
+    RAISE;
+  END;
+END UTILS;
+/
+
+*/
+-- {{TGT_DBMS}}_UTILS_INSTALL_END
+
+-- === END TARGET-UTILITY SECTION ===
+
+PROMPT [UTIL] Utilities install completed (placeholder)
+
+# -------------------------------------------------------------------------
+# [STAGES]  (The Migration UI should render these stages in order)
+# -------------------------------------------------------------------------
+# Each stage has:
+#   - id: stable identifier for resume/skip logic
+#   - ui_label: label shown in Migration UI
+#   - mode: EXECUTE | VALIDATE_ONLY | DRYRUN
+#   - commit_policy: COMMIT | NO_COMMIT | ROLLBACK
+#   - actions: list of executable steps (tool scripts or internal tool calls)
+#
+# Action types:
+#   - tool_call: invokes internal tool capability (preferred for portability)
+#   - sql_source: runs SQL on source
+#   - sql_target: runs SQL on target (admin or work conn)
+#   - file_emit: emits artifact (json, sql, csv, etc.)
+#   - assert: fail stage if condition not met
+#
+# -------------------------------------------------------------------------
+
+PROMPT
+PROMPT ==============================================================
+PROMPT STAGE 1: DISCOVERY
+PROMPT ==============================================================
+PROMPT
+
+-- [STAGE_META]
+-- id=discovery
+-- ui_label=Discovery
+-- commit_policy=NO_COMMIT
+-- on_fail=STOP
+
+-- (Preferred) tool_call: discover schemas, tables, views, procs, indexes, FK graph, row counts, sizes
+-- {{TOOL_CALL}} DISCOVER_SOURCE_METADATA conn="{{SRC_CONN}}" db="{{SRC_DB_NAME}}" output="{{LOG_DIR}}/discovery.json"
+
+PROMPT
+PROMPT ==============================================================
+PROMPT STAGE 2: PLANNING
+PROMPT ==============================================================
+PROMPT
+
+-- id=planning
+-- ui_label=Planning
+-- commit_policy=NO_COMMIT
+-- on_fail=STOP
+
+-- tool_call: build dependency graph, compute DDL order (tables -> PK -> CHECK -> INDEX -> FK)
+-- {{TOOL_CALL}} BUILD_DEPENDENCY_PLAN input="{{LOG_DIR}}/discovery.json" output="{{LOG_DIR}}/plan.json" order_tables_by_fk="{{ORDER_TABLES_BY_FK}}"
+
+PROMPT
+PROMPT ==============================================================
+PROMPT STAGE 3: SCHEMA PROVISIONING
+PROMPT ==============================================================
+PROMPT
+
+-- id=schema_provisioning
+-- ui_label=Schema Provisioning
+-- commit_policy=COMMIT (typically DDL)
+-- on_fail=STOP
+
+-- In MULTI_SCHEMA_CLONE mode, create/verify schemas/users matching source schemas (exact names)
+-- In SINGLE_SCHEMA mode, verify {{TGT_SCHEMA}} exists.
+-- tool_call recommended:
+-- {{TOOL_CALL}} ENSURE_TARGET_SCHEMAS conn="{{TGT_ADMIN_CONN}}" plan="{{LOG_DIR}}/plan.json" strategy="{{SCHEMA_STRATEGY}}" target_schema="{{TGT_SCHEMA}}" auto_create="{{AUTO_CREATE_SCHEMAS}}" role="{{ROLE_NAME}}" output="{{LOG_DIR}}/schema_provisioning.json"
+
+PROMPT
+PROMPT ==============================================================
+PROMPT STAGE 4: DATA DEF VALIDATION (DDL DRY-RUN)
+PROMPT ==============================================================
+PROMPT
+
+-- id=data_def_validation
+-- ui_label=Data Def Validation
+-- commit_policy=NO_COMMIT
+-- on_fail=STOP (recommended)
+
+-- Purpose: validate DDL without creating objects (parse-only)
+-- tool_call:
+-- {{TOOL_CALL}} VALIDATE_DDL plan="{{LOG_DIR}}/plan.json" conn="{{TGT_ADMIN_CONN}}" output="{{LOG_DIR}}/ddl_validation_report.json"
+-- Behavior:
+--   - generate DDL exactly as deploy stage would
+--   - parse/validate only (no create, no commit)
+--   - collect all errors into a consolidated report
+--   - fail this stage if any error, unless configured to "warn-only"
+
+PROMPT
+PROMPT ==============================================================
+PROMPT STAGE 5: DDL DEPLOYMENT
+PROMPT ==============================================================
+PROMPT
+
+-- id=ddl_deployment
+-- ui_label=Generate/Deploy DDL
+-- commit_policy=COMMIT
+-- on_fail=STOP
+
+-- tool_call:
+-- {{TOOL_CALL}} DEPLOY_DDL plan="{{LOG_DIR}}/plan.json" conn="{{TGT_ADMIN_CONN}}" output="{{LOG_DIR}}/ddl_deploy_report.json"
+-- Recommended ordering:
+--   1) Schemas (if needed)
+--   2) Tables
+--   3) PK constraints
+--   4) Check constraints
+--   5) Indexes
+--   6) FK constraints
+--   7) Views
+--   8) Functions/Procedures/Triggers
+--   9) Grants
+
+PROMPT
+PROMPT ==============================================================
+PROMPT STAGE 6: DATA VALIDATION (DRY-RUN INSERTS)
+PROMPT ==============================================================
+PROMPT
+
+-- id=data_validation
+-- ui_label=Validation for Data
+-- commit_policy=ROLLBACK
+-- on_fail=STOP (recommended)
+
+-- Purpose: catch truncation/type issues before real load
+-- Default: validate up to {{DATA_VALIDATE_ROW_LIMIT}} rows per table.
+-- On-demand: validate ALL rows (UI override) when {{VALIDATE_ALL_ON_DEMAND}} is true.
+-- tool_call:
+-- {{TOOL_CALL}} VALIDATE_DATA plan="{{LOG_DIR}}/plan.json" src_conn="{{SRC_CONN}}" tgt_conn="{{TGT_ADMIN_CONN}}" row_limit="{{DATA_VALIDATE_ROW_LIMIT}}" validate_all_override="{{VALIDATE_ALL_ON_DEMAND}}" output="{{LOG_DIR}}/data_validation_report.json"
+-- Requirements:
+--   - perform inserts inside a transaction
+--   - rollback always
+--   - report all errors consolidated by object
+
+PROMPT
+PROMPT ==============================================================
+PROMPT STAGE 7: DATA MIGRATION
+PROMPT ==============================================================
+PROMPT
+
+-- id=data_migration
+-- ui_label=Move Data
+-- commit_policy=COMMIT
+-- on_fail=STOP
+
+-- tool_call:
+-- {{TOOL_CALL}} MIGRATE_DATA plan="{{LOG_DIR}}/plan.json" src_conn="{{SRC_CONN}}" tgt_conn="{{TGT_ADMIN_CONN}}" dop="{{DOP}}" batch_size="{{BATCH_SIZE}}" output="{{LOG_DIR}}/data_migration_report.json"
+
+PROMPT
+PROMPT ==============================================================
+PROMPT STAGE 8: POST VALIDATION
+PROMPT ==============================================================
+PROMPT
+
+-- id=post_validation
+-- ui_label=Post Validation
+-- commit_policy=NO_COMMIT
+-- on_fail=STOP or WARN
+
+-- tool_call examples:
+-- {{TOOL_CALL}} VALIDATE_ROW_COUNTS src_conn="{{SRC_CONN}}" tgt_conn="{{TGT_ADMIN_CONN}}" plan="{{LOG_DIR}}/plan.json" output="{{LOG_DIR}}/rowcount_report.json"
+-- {{TOOL_CALL}} VALIDATE_CHECKSUMS  src_conn="{{SRC_CONN}}" tgt_conn="{{TGT_ADMIN_CONN}}" plan="{{LOG_DIR}}/plan.json" output="{{LOG_DIR}}/checksum_report.json"
+
+PROMPT
+PROMPT ==============================================================
+PROMPT STAGE 9: FINALIZATION
+PROMPT ==============================================================
+PROMPT
+
+-- id=finalization
+-- ui_label=Finalization
+-- commit_policy=COMMIT
+-- on_fail=WARN (best effort)
+
+-- Example final steps:
+--   - lock/expire auto-created users (Option A)
+--   - remove temporary roles/util objects if required
+-- tool_call:
+-- {{TOOL_CALL}} FINALIZE_TARGET conn="{{TGT_ADMIN_CONN}}" provision_report="{{LOG_DIR}}/schema_provisioning.json" output="{{LOG_DIR}}/finalization_report.json"
+
+PROMPT
+PROMPT ==============================================================
+PROMPT END OF CONVERSION RUN {{RUN_ID}}
+PROMPT ==============================================================
+PROMPT
+
+SPOOL OFF;
+COMMIT;

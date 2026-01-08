@@ -1,0 +1,12 @@
+{
+  "Name": "MyLocalDB_SQL",
+  "Engine": 0,
+  "Region": "Dev",
+  "Hostname": "127.0.0.1",
+  "Port": 1433,
+  "Username": "sa",
+  "UseWindowsAuthentication": false,
+  "SavePassword": false,
+  "DefaultDatabase": "master",
+  "LastTestStatus": 0
+}

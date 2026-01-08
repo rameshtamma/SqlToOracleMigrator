@@ -1,0 +1,15 @@
+{
+  "Name": "MyLocalDB_XE",
+  "Engine": 1,
+  "Region": "Dev",
+  "Hostname": "RT.fios-router.home",
+  "Port": 1521,
+  "Username": "system",
+  "SavePassword": false,
+  "UseSid": true,
+  "Sid": "XE",
+  "AuthenticationType": "Default",
+  "ConnectionType": "Basic",
+  "Role": "default",
+  "LastTestStatus": 0
+}

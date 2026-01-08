@@ -1,0 +1,15 @@
+{
+  "Name": "MyLocalDB_xepdb1",
+  "Engine": 1,
+  "Region": "Dev",
+  "Hostname": "RT.fios-router.home",
+  "Port": 1521,
+  "Username": "system",
+  "SavePassword": false,
+  "UseSid": false,
+  "ServiceName": "xepdb1",
+  "AuthenticationType": "Default",
+  "ConnectionType": "Basic",
+  "Role": "default",
+  "LastTestStatus": 0
+}
