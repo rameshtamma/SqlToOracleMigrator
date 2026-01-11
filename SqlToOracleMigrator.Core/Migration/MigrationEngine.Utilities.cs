@@ -1,4 +1,4 @@
-using Microsoft.Data.SqlClient;
+﻿using Microsoft.Data.SqlClient;
 using Oracle.ManagedDataAccess.Client;
 using Oracle.ManagedDataAccess.Types;
 using SqlToOracleMigrator.Core.Migration;
@@ -8,10 +8,18 @@ using System.Text;
 using System.Text.Json;
 using System.Security.Cryptography;
 
+using System.Threading;
+
 namespace SqlToOracleMigrator.Core;
 
 public sealed partial class MigrationEngine
 {
+
+// Gates used when we must fall back to shared connections (e.g., password is not available for child connections).
+private static readonly SemaphoreSlim _sharedSqlGate = new(1, 1);
+private static readonly SemaphoreSlim _sharedOraGate = new(1, 1);
+
+
 private void ValidateResumeCompatibility(ToolMigRunInfo run, string currentRequestJson)
     {
         if (string.IsNullOrWhiteSpace(run.RequestJson))
@@ -134,7 +142,78 @@ private async Task DeployTableAsync(SqlConnection openSql, OracleConnection open
 
 private async Task CopyTableAsync(SqlConnection openSql, OracleConnection openOra, string dbName, string schema, string table, string targetSchema, CancellationToken cancellationToken)
     {
-        var columns = await _sqlMeta.GetTableColumnsAsync(openSql, dbName, schema, table, cancellationToken);
+
+// FIX: DataMigration runs with DOP>1. DbConnection instances are not safe for concurrent readers/transactions.
+// Prefer per-table connections. If providers sanitize ConnectionString after Open() (default Persist Security Info=false),
+// passwords may be omitted and child connection Open() can fail (e.g., ORA-01005 / ORA-01017 / SQL Login failed).
+// In that case, fall back to the already-open parent connection and serialize access via gates.
+
+SqlConnection? sqlPerTable = null;
+OracleConnection? oraPerTable = null;
+var useSharedSql = false;
+var useSharedOra = false;
+var acquiredSqlGate = false;
+var acquiredOraGate = false;
+
+try
+{
+    // --- SQL child connection ---
+    try
+    {
+        sqlPerTable = SqlChildConnectionFactory.CreateChildSqlConnection(openSql);
+        await sqlPerTable.OpenAsync(cancellationToken);
+        try { sqlPerTable.ChangeDatabase(dbName); } catch { /* best effort */ }
+        openSql = sqlPerTable;
+    }
+    catch (SqlException ex) when (ex.Number == 18456 || ex.Message.IndexOf("Login failed", StringComparison.OrdinalIgnoreCase) >= 0)
+    {
+        useSharedSql = true;
+        if (sqlPerTable != null)
+        {
+            try { await sqlPerTable.DisposeAsync(); } catch { }
+            sqlPerTable = null;
+        }
+        // keep openSql as the original parent connection (already open)
+    }
+
+    // --- Oracle child connection ---
+    try
+    {
+        oraPerTable = OracleChildConnectionFactory.CreateChildOracleConnection(openOra);
+        await oraPerTable.OpenAsync(cancellationToken);
+        openOra = oraPerTable;
+    }
+    catch (OracleException ex) when (
+        ex.Number == 1005 || // ORA-01005: null password
+        ex.Number == 1017 || // ORA-01017: invalid username/password
+        ex.Number == 50000 || // ORA-50000: connection request timed out (pool/driver)
+        ex.Message.IndexOf("ORA-01005", StringComparison.OrdinalIgnoreCase) >= 0 ||
+        ex.Message.IndexOf("ORA-01017", StringComparison.OrdinalIgnoreCase) >= 0 ||
+        ex.Message.IndexOf("ORA-50000", StringComparison.OrdinalIgnoreCase) >= 0 ||
+        ex.Message.IndexOf("Connection request timed out", StringComparison.OrdinalIgnoreCase) >= 0)
+    {
+        useSharedOra = true;
+        if (oraPerTable != null)
+        {
+            try { await oraPerTable.DisposeAsync(); } catch { }
+            oraPerTable = null;
+        }
+        // keep openOra as the original parent connection (already open)
+    }
+
+    // Acquire gates only when we must use shared parent connections
+    if (useSharedSql)
+    {
+        await _sharedSqlGate.WaitAsync(cancellationToken);
+        acquiredSqlGate = true;
+    }
+    if (useSharedOra)
+    {
+        await _sharedOraGate.WaitAsync(cancellationToken);
+        acquiredOraGate = true;
+    }
+
+var columns = await _sqlMeta.GetTableColumnsAsync(openSql, dbName, schema, table, cancellationToken);
         if (columns.Count == 0) return;
 
         var colNames = columns.OrderBy(c => c.Ordinal).Select(c => c.ColumnName).ToList();
@@ -232,14 +311,32 @@ const int batchCommit = 2000;
                 await insertCmd.Transaction!.CommitAsync(cancellationToken);
                 pending = 0;
 
-                // Begin new transaction
-                insertCmd.Transaction!.Dispose();
+                // Begin new transaction before disposing the old one to maintain consistent state
+                var oldTxn = insertCmd.Transaction;
                 insertCmd.Transaction = openOra.BeginTransaction();
+                oldTxn?.Dispose();
             }
         }
 
         if (pending > 0)
             await insertCmd.Transaction!.CommitAsync(cancellationToken);
+    
+
+}
+finally
+{
+    if (acquiredOraGate) _sharedOraGate.Release();
+    if (acquiredSqlGate) _sharedSqlGate.Release();
+
+    if (oraPerTable != null)
+    {
+        try { await oraPerTable.DisposeAsync(); } catch { }
+    }
+    if (sqlPerTable != null)
+    {
+        try { await sqlPerTable.DisposeAsync(); } catch { }
+    }
+}
     }
 
 private async Task ValidateTableDataAsync(
@@ -480,7 +577,7 @@ private static string SafeValuePreview(object? value, int maxChars)
 
         var s = value.ToString() ?? "";
         if (s.Length <= maxChars) return s;
-        return s.Substring(0, maxChars) + $"…(truncated, len={s.Length})";
+        return s.Substring(0, maxChars) + $"â€¦(truncated, len={s.Length})";
     }
 
 
@@ -495,7 +592,7 @@ private static async Task<Dictionary<string, OracleColumnMeta>> GetOracleTargetC
     var ownerRaw = (targetSchema ?? string.Empty).Trim().Trim('"');
     var tableRaw = (targetTable ?? string.Empty).Trim().Trim('"');
 
-    // If quoted identifiers were created (e.g., "Employee"), ALL_TAB_COLUMNS stores them case-sensitively.
+    // If quoted identifiers were created ( e.g., "Employee"), ALL_TAB_COLUMNS stores them case-sensitively.
     // So we try both raw-case and upper-case variants.
     var ownerUpper = ownerRaw.ToUpperInvariant();
     var tableUpper = tableRaw.ToUpperInvariant();
@@ -959,3 +1056,128 @@ BEGIN
   safe_exec('PURGE RECYCLEBIN');
 END;";
 }
+
+internal static class SqlChildConnectionFactory
+{
+    internal static SqlConnection CreateChildSqlConnection(SqlConnection parent)
+    {
+        if (parent == null) throw new ArgumentNullException(nameof(parent));
+
+        try
+        {
+            var cred = parent.Credential;
+            if (cred != null)
+            {
+                var ctor = typeof(SqlConnection).GetConstructor(new[] { typeof(string), typeof(SqlCredential) });
+                if (ctor != null)
+	                    return (SqlConnection)ctor.Invoke(new object[] { parent.ConnectionString, cred });
+            }
+        }
+        catch
+        {
+            // ignore
+        }
+
+	        // NOTE: if Persist Security Info=false (default), SqlConnection.ConnectionString can be *sanitized*
+	        // after Open() and may not include the password. That breaks per-table child connections when using SQL auth.
+	        // We attempt to recover the original (unsanitized) connection string from non-public state.
+	        var connString = TryGetRawConnectionString(parent) ?? parent.ConnectionString;
+	        var child = new SqlConnection(connString);
+
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(parent.AccessToken))
+                child.AccessToken = parent.AccessToken;
+        }
+        catch
+        {
+            // ignore
+        }
+
+        return child;
+    }
+
+	    private static string? TryGetRawConnectionString(SqlConnection parent)
+	    {
+	        try
+	        {
+	            // Fast path: if the public ConnectionString already contains a password, use it.
+	            var publicCs = parent.ConnectionString;
+	            if (!string.IsNullOrWhiteSpace(publicCs) && ContainsPasswordToken(publicCs))
+	                return publicCs;
+
+	            // Heuristic: scan private fields up the inheritance chain looking for a string that still contains password.
+	            // This avoids hardcoding internal field names which can change between versions.
+	            for (var t = parent.GetType(); t != null; t = t.BaseType)
+	            {
+	                var fields = t.GetFields(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+	                foreach (var f in fields)
+	                {
+	                    if (f.FieldType != typeof(string)) continue;
+	                    if (f.GetValue(parent) is not string s) continue;
+	                    if (string.IsNullOrWhiteSpace(s)) continue;
+	                    if (ContainsPasswordToken(s)) return s;
+	                }
+	            }
+	        }
+	        catch
+	        {
+	            // ignore
+	        }
+	        return null;
+	    }
+
+	    private static bool ContainsPasswordToken(string cs)
+	    {
+	        // SQL Server aliases for password can be: Password / Pwd.
+	        return cs.IndexOf("Password=", StringComparison.OrdinalIgnoreCase) >= 0
+	            || cs.IndexOf("Pwd=", StringComparison.OrdinalIgnoreCase) >= 0;
+	    }
+}
+
+	internal static class OracleChildConnectionFactory
+	{
+	    internal static OracleConnection CreateChildOracleConnection(OracleConnection parent)
+	    {
+	        if (parent == null) throw new ArgumentNullException(nameof(parent));
+
+	        // OracleConnection.ConnectionString is usually preserved, but for safety we also try to recover
+	        // an unsanitized form via reflection if needed.
+	        var cs = TryGetRawOracleConnectionString(parent) ?? parent.ConnectionString;
+	        return new OracleConnection(cs);
+	    }
+
+	    private static string? TryGetRawOracleConnectionString(OracleConnection parent)
+	    {
+	        try
+	        {
+	            var publicCs = parent.ConnectionString;
+	            if (!string.IsNullOrWhiteSpace(publicCs) && ContainsPasswordToken(publicCs))
+	                return publicCs;
+
+	            for (var t = parent.GetType(); t != null; t = t.BaseType)
+	            {
+	                var fields = t.GetFields(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+	                foreach (var f in fields)
+	                {
+	                    if (f.FieldType != typeof(string)) continue;
+	                    if (f.GetValue(parent) is not string s) continue;
+	                    if (string.IsNullOrWhiteSpace(s)) continue;
+	                    if (ContainsPasswordToken(s)) return s;
+	                }
+	            }
+	        }
+	        catch
+	        {
+	            // ignore
+	        }
+	        return null;
+	    }
+
+	    private static bool ContainsPasswordToken(string cs)
+	    {
+	        // Common Oracle keys: Password / Pwd.
+	        return cs.IndexOf("Password=", StringComparison.OrdinalIgnoreCase) >= 0
+	            || cs.IndexOf("Pwd=", StringComparison.OrdinalIgnoreCase) >= 0;
+	    }
+	}
