@@ -71,6 +71,21 @@ public sealed partial class MigrationEngine
         var openOra = _connMgr.TryGetOpenOracle(request.TargetOracleConnection.Name)
             ?? throw new InvalidOperationException("Target Oracle connection is not active.");
 
+        // Optional: ensure/switch to a target PDB (Adventureworks2025) when SYSDBA is used.
+        if (request.EnsureTargetPdb && !string.IsNullOrWhiteSpace(request.TargetPdbName))
+        {
+            try
+            {
+                _logger.Info($"[Oracle] EnsureTargetPdb=true. Ensuring/switching to PDB '{request.TargetPdbName}'...");
+                await EnsureAndSwitchToPdbAsync(openOra, request.TargetPdbName, request.TargetOracleConnection.RuntimePassword ?? string.Empty, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.Warn($"[Oracle] PDB ensure/switch failed: {ex.Message}");
+                // Continue - some environments do not allow PDB operations.
+            }
+        }
+
         try { openSql.ChangeDatabase(request.SourceDatabase); } catch { }
 
         await _toolMig.EnsureCreatedAsync(openSql, cancellationToken);

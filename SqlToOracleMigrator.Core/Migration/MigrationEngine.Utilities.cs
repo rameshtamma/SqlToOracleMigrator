@@ -138,6 +138,9 @@ private async Task DeployTableAsync(SqlConnection openSql, OracleConnection open
         await using var cmd = new OracleCommand(ddl, openOra);
         await cmd.ExecuteNonQueryAsync(cancellationToken);
         _logger.Info($"Deployed table DDL: {schema}.{table}");
+
+        // Primary keys, unique constraints and indexes must be migrated as well (core requirement).
+        await DeployConstraintsAndIndexesAsync(openSql, openOra, dbName, schema, table, targetSchema, cancellationToken);
     }
 
 private async Task CopyTableAsync(SqlConnection openSql, OracleConnection openOra, string dbName, string schema, string table, string targetSchema, CancellationToken cancellationToken)

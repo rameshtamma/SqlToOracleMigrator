@@ -70,10 +70,36 @@ BEGIN
         EndedAt DATETIMEOFFSET NULL,
         ErrorCode NVARCHAR(64) NULL,
         ErrorMessage NVARCHAR(4000) NULL,
-        CONSTRAINT PK_ToolMig_ObjectStatus PRIMARY KEY (RunId, Stage, SchemaName, ObjectName),
+        CONSTRAINT PK_ToolMig_ObjectStatus PRIMARY KEY (RunId, Stage, SchemaName, ObjectName, ObjectType),
         CONSTRAINT FK_ToolMig_ObjectStatus_Runs FOREIGN KEY (RunId) REFERENCES ToolMig.Runs(RunId)
     );
     CREATE INDEX IX_ToolMig_ObjectStatus_RunId_Stage_Status ON ToolMig.ObjectStatus(RunId, Stage, Status);
+END;
+
+-- Upgrade path: earlier versions had PK without ObjectType, which prevents tracking non-table objects
+IF OBJECT_ID('ToolMig.ObjectStatus') IS NOT NULL
+BEGIN
+    DECLARE @pk SYSNAME;
+    DECLARE @pkIndexId INT;
+    SELECT TOP(1) @pk = kc.name, @pkIndexId = kc.unique_index_id
+    FROM sys.key_constraints kc
+    WHERE kc.parent_object_id = OBJECT_ID('ToolMig.ObjectStatus') AND kc.type = 'PK';
+
+    IF @pk IS NOT NULL AND @pkIndexId IS NOT NULL
+    BEGIN
+        IF NOT EXISTS (
+            SELECT 1
+            FROM sys.index_columns ic
+            JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
+            WHERE ic.object_id = OBJECT_ID('ToolMig.ObjectStatus')
+              AND ic.index_id = @pkIndexId
+              AND c.name = 'ObjectType'
+        )
+        BEGIN
+            EXEC('ALTER TABLE ToolMig.ObjectStatus DROP CONSTRAINT [' + @pk + ']');
+            EXEC('ALTER TABLE ToolMig.ObjectStatus ADD CONSTRAINT PK_ToolMig_ObjectStatus PRIMARY KEY (RunId, Stage, SchemaName, ObjectName, ObjectType)');
+        END
+    END
 END;
 ";
         await using var cmd = new SqlCommand(ddl, openSql);
@@ -227,8 +253,8 @@ WHEN NOT MATCHED THEN
     {
         const string sql = @"
 MERGE ToolMig.ObjectStatus AS t
-USING (SELECT @runId AS RunId, @stage AS Stage, @schema AS SchemaName, @obj AS ObjectName) AS s
-ON (t.RunId=s.RunId AND t.Stage=s.Stage AND t.SchemaName=s.SchemaName AND t.ObjectName=s.ObjectName)
+USING (SELECT @runId AS RunId, @stage AS Stage, @schema AS SchemaName, @obj AS ObjectName, @objType AS ObjectType) AS s
+ON (t.RunId=s.RunId AND t.Stage=s.Stage AND t.SchemaName=s.SchemaName AND t.ObjectName=s.ObjectName AND t.ObjectType=s.ObjectType)
 WHEN MATCHED THEN
     UPDATE SET Status=@status,
                StartedAt = COALESCE(t.StartedAt, CASE WHEN @status IN ('InProgress','Completed','Failed','Skipped') THEN SYSDATETIMEOFFSET() END),
@@ -270,7 +296,7 @@ WHEN NOT MATCHED THEN
     public async Task<HashSet<string>> GetCompletedObjectsAsync(SqlConnection openSql, Guid runId, string stage, CancellationToken cancellationToken)
     {
         const string sql = @"
-SELECT SchemaName, ObjectName
+SELECT SchemaName, ObjectName, ObjectType
 FROM ToolMig.ObjectStatus
 WHERE RunId=@runId AND Stage=@stage AND Status='Completed';
 ";
@@ -283,7 +309,10 @@ WHERE RunId=@runId AND Stage=@stage AND Status='Completed';
         {
             var schema = rdr.GetString(0);
             var obj = rdr.GetString(1);
+            var typ = rdr.IsDBNull(2) ? string.Empty : rdr.GetString(2);
+            // Backward compatible key (schema.obj) + type-aware key (schema.obj|TYPE)
             set.Add(schema + "." + obj);
+            if (!string.IsNullOrWhiteSpace(typ)) set.Add(schema + "." + obj + "|" + typ);
         }
         return set;
     }

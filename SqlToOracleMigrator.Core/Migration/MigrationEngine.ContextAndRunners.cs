@@ -29,6 +29,15 @@ public sealed partial class MigrationEngine
         ErrorHandlingMode StageMode)
     {
         public List<(string Schema, string Table)> Tables { get; set; } = new();
+
+        public List<(string Schema, string Name)> Sequences { get; set; } = new();
+        public List<(string Schema, string Name)> Views { get; set; } = new();
+        public List<(string Schema, string Name)> Procedures { get; set; } = new();
+        public List<(string Schema, string Name)> Functions { get; set; } = new();
+        public List<(string Schema, string Name, string ParentSchema, string ParentName)> Triggers { get; set; } = new();
+        public List<(string Schema, string Name, string BaseObjectName)> Synonyms { get; set; } = new();
+        public List<(string Schema, string Name, string UnderlyingType)> UserDefinedTypes { get; set; } = new();
+        public List<SqlForeignKeyDef> ForeignKeys { get; set; } = new();
     }
 
     internal interface IMigrationStageRunner

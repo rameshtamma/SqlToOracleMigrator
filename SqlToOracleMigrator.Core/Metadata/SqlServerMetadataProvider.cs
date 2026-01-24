@@ -146,7 +146,8 @@ public sealed class SqlServerMetadataProvider
                 Precision = GetNullableInt32(rdr, 3),
                 Scale = GetNullableInt32(rdr, 4),
                 IsNullable = rdr.GetBoolean(5),
-                Ordinal = rdr.GetInt32(6)
+                Ordinal = rdr.GetInt32(6),
+                DefaultDefinition = rdr.IsDBNull(7) ? null : rdr.GetString(7)
             });
         }
 
@@ -201,4 +202,5 @@ public sealed class SqlTableColumn
     public int? Scale { get; set; }
     public bool IsNullable { get; set; }
     public int Ordinal { get; set; }
+    public string? DefaultDefinition { get; set; }
 }

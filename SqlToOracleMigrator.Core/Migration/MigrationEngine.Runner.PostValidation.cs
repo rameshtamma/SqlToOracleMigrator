@@ -54,6 +54,25 @@ public sealed partial class MigrationEngine
                 }
             }
 
+
+
+            // Deploy foreign keys AFTER data migration to avoid load failures.
+            if (ctx.Request.CreateForeignKeys && ctx.ForeignKeys.Count > 0)
+            {
+                ctx.Engine.Raise(MigrationStage.PostValidation, $"Deploying foreign keys ({ctx.ForeignKeys.Count})...");
+                ctx.AppendLog($"[PostValidation] Deploying foreign keys ({ctx.ForeignKeys.Count})...");
+                try
+                {
+                    var fkErrors = await ctx.Engine.DeployForeignKeysAsync(ctx.OpenOra, ctx.ForeignKeys, ctx.GetTargetSchema, ctx.Request.ForeignKeysEnableNoValidate, ct);
+                    errors.AddRange(fkErrors);
+                }
+                catch (Exception ex)
+                {
+                    errors.Add(StageError.FromException(MigrationStage.PostValidation, "", "ForeignKeys", ex));
+                    ctx.AppendLog($"[PostValidation][ERROR] Foreign key deployment failed: {ex.Message}");
+                    if (ctx.StageMode == ErrorHandlingMode.FailFast) throw;
+                }
+            }
             await ctx.ToolMigStageAsync(MigrationStage.PostValidation, "Completed",
                 errors.Count == 0 ? "Post validation complete" : $"Post validation complete with {errors.Count} warning(s)",
                 errors.Count);

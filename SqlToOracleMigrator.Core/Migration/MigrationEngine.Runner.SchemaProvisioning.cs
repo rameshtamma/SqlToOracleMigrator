@@ -40,8 +40,8 @@ public sealed partial class MigrationEngine
                         .OrderBy(s => s, StringComparer.OrdinalIgnoreCase)
                         .ToList();
 
-                    // Option #2: reset target schemas on NEW runs (not resume)
-                    if (!ctx.Request.ResumeRunId.HasValue)
+                    // Global requirement: on NEW runs (not resume), override target definitions/data
+                    if (ctx.Request.OverrideTargetObjectsEachRun && !ctx.Request.ResumeRunId.HasValue)
                     {
                         var targetSchemasToReset = sourceSchemas
                             .Select(ctx.GetTargetSchema)
@@ -83,6 +83,16 @@ public sealed partial class MigrationEngine
                     OracleMetadataProvider.ValidateOracleIdentifier(ctx.Request.TargetSchema);
                     var normalizedTarget = OracleIdent.FormatSchema(ctx.Request.TargetSchema);
                     await ctx.Engine._oraMeta.EnsureSchemaUserExistsAsync(ctx.OpenOra, normalizedTarget, ctx.Request.AutoCreateTargetSchemas, ct);
+
+                    if (ctx.Request.OverrideTargetObjectsEachRun && !ctx.Request.ResumeRunId.HasValue)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        ctx.Engine.Raise(MigrationStage.SchemaProvisioning, $"Resetting target schema '{normalizedTarget}' (dropping existing objects) ...");
+                        ctx.AppendLog($"[SchemaProvisioning] Resetting target schema '{normalizedTarget}' (dropping existing objects) ...");
+                        await ResetTargetSchemaObjectsAsync(ctx.OpenOra, normalizedTarget, ct);
+                        await ctx.ToolMigObjectAsync(MigrationStage.SchemaProvisioning, normalizedTarget, normalizedTarget, "SCHEMA_RESET", "Completed", null, null);
+                    }
+
                 }
 
                 if (errors.Count > 0)

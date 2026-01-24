@@ -49,8 +49,19 @@ public static class ConnectionStringBuilders
 
         var dataSource = $"(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST={host})(PORT={port}))(CONNECT_DATA={connectData}))";
 
+        // Enable SYSDBA when requested (needed for CDB/PDB provisioning).
+        var role = (def.Role ?? string.Empty).Trim();
+        var dbaPriv = string.Empty;
+        if (string.Equals(user, "SYS", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(role, "SYSDBA", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(role, "SYSOPER", StringComparison.OrdinalIgnoreCase))
+        {
+            // ODP.NET connection string key
+            dbaPriv = "DBA Privilege=SYSDBA;";
+        }
+
         // Do not include Persist Security Info; keep it simple.
-        return $"User Id={user};Password={pass};Data Source={dataSource};";
+        return $"User Id={user};Password={pass};{dbaPriv}Data Source={dataSource};";
     }
 
     public static SqlConnection CreateOpenSqlConnection(ConnectionDefinition def, string? passwordOverride = null)

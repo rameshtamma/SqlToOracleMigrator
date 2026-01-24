@@ -202,5 +202,48 @@ public sealed class MigrationRequest
     /// Controls whether the engine stops on first error (FailFast) or collects errors within a stage (CollectAll).
     /// </summary>
     public ErrorHandlingMode ErrorHandlingMode { get; init; } = ErrorHandlingMode.FailFast;
+
+    // ----------------------------
+    // v6.3 enhancements (2026-01)
+    // ----------------------------
+
+    /// <summary>
+    /// Global requirement: on NEW runs (non-resume), override target definitions and data.
+    /// When resuming a run, completed stages/objects are still respected.
+    /// </summary>
+    public bool OverrideTargetObjectsEachRun { get; init; } = true;
+
+    /// <summary>
+    /// When true, ensure a target Oracle PDB exists (CDB multitenant) and switch the session into it.
+    /// Requires SYSDBA privileges on the target connection.
+    /// </summary>
+    public bool EnsureTargetPdb { get; init; } = true;
+
+    /// <summary>
+    /// Target PDB name to ensure/switch to (default Adventureworks2025).
+    /// </summary>
+    public string TargetPdbName { get; init; } = "Adventureworks2025";
+
+    /// <summary>
+    /// When true, create dependent objects (views/procs/functions/triggers/synonyms/sequences/types).
+    /// If SQL-to-Oracle translation fails, a compilable stub may be created when CreateDependentObjectStubs=true.
+    /// </summary>
+    public bool CreateDependentObjects { get; init; } = true;
+
+    /// <summary>
+    /// When true, create stub Oracle objects when translation is not supported.
+    /// </summary>
+    public bool CreateDependentObjectStubs { get; init; } = true;
+
+    /// <summary>
+    /// When true, deploy foreign keys after data migration.
+    /// </summary>
+    public bool CreateForeignKeys { get; init; } = true;
+
+    /// <summary>
+    /// When true, create FKs as ENABLE NOVALIDATE to avoid failing on legacy data.
+    /// </summary>
+    public bool ForeignKeysEnableNoValidate { get; init; } = true;
+
 }
 

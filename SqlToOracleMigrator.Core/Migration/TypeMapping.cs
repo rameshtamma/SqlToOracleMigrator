@@ -98,10 +98,65 @@ public static class OracleDdlGenerator
             {
                 var colQ = OracleIdent.QuoteIdent(c.ColumnName);
                 var oracleType = mapper.Map(c.SqlTypeName, c.MaxLength, c.Precision, c.Scale);
+                var def = OracleDefaultConverter.Convert(c.DefaultDefinition);
+                var defClause = string.IsNullOrWhiteSpace(def) ? "" : $" DEFAULT {def}";
                 var nullable = c.IsNullable ? "" : " NOT NULL";
-                return $"{colQ} {oracleType}{nullable}";
+                return $"{colQ} {oracleType}{defClause}{nullable}";
             });
 
         return $"CREATE TABLE {schemaQ}.{tableQ} (\n  {string.Join(",\n  ", colLines)}\n)";
+    }
+}
+
+
+internal static class OracleDefaultConverter
+{
+    public static string? Convert(string? sqlDefaultDefinition)
+    {
+        if (string.IsNullOrWhiteSpace(sqlDefaultDefinition)) return null;
+
+        // SQL Server default constraints are commonly wrapped in parentheses (sometimes multiple levels).
+        var s = sqlDefaultDefinition.Trim();
+        while (s.StartsWith("(") && s.EndsWith(")") && s.Length > 2)
+        {
+            var inner = s.Substring(1, s.Length - 2).Trim();
+            // Stop unwrapping if parentheses are imbalanced.
+            if (!IsBalanced(inner)) break;
+            s = inner;
+        }
+
+        // Remove Unicode string literal prefix: N'abc' => 'abc'
+        if (s.StartsWith("N'", StringComparison.OrdinalIgnoreCase))
+            s = "'" + s.Substring(2);
+
+        // Common function mappings
+        if (s.Equals("GETDATE()", StringComparison.OrdinalIgnoreCase) || s.Equals("GETDATE", StringComparison.OrdinalIgnoreCase))
+            return "SYSDATE";
+        if (s.Equals("NEWID()", StringComparison.OrdinalIgnoreCase) || s.Equals("NEWID", StringComparison.OrdinalIgnoreCase))
+            return "SYS_GUID()";
+
+        // Bit/boolean typical defaults
+        if (s.Equals("1")) return "1";
+        if (s.Equals("0")) return "0";
+
+        // Remove SQL Server bracket quoting in literals/idents; keep as-is otherwise.
+        s = s.Replace("[", "").Replace("]", "");
+
+        return s;
+    }
+
+    private static bool IsBalanced(string s)
+    {
+        var depth = 0;
+        foreach (var ch in s)
+        {
+            if (ch == '(') depth++;
+            else if (ch == ')')
+            {
+                depth--;
+                if (depth < 0) return false;
+            }
+        }
+        return depth == 0;
     }
 }

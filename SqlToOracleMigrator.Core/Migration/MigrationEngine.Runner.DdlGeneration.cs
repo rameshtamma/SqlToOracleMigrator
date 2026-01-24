@@ -1,13 +1,3 @@
-using Microsoft.Data.SqlClient;
-using Oracle.ManagedDataAccess.Client;
-using Oracle.ManagedDataAccess.Types;
-using SqlToOracleMigrator.Core.Migration;
-using SqlToOracleMigrator.Core.Tracking;
-using System.Collections.Concurrent;
-using System.Text;
-using System.Text.Json;
-using System.Security.Cryptography;
-
 namespace SqlToOracleMigrator.Core;
 
 public sealed partial class MigrationEngine
@@ -25,7 +15,7 @@ public sealed partial class MigrationEngine
                 return;
             }
 
-            ctx.Engine.Raise(MigrationStage.DdlGeneration, "Generating and deploying table DDL...");
+            ctx.Engine.Raise(MigrationStage.DdlGeneration, "Generating and deploying DDL (tables + dependent objects)...");
             ctx.AppendLog("[DdlGeneration] Starting...");
             await ctx.ToolMigStageAsync(MigrationStage.DdlGeneration, "InProgress", "Generating + deploying DDL", 0);
 
@@ -34,27 +24,108 @@ public sealed partial class MigrationEngine
                 ? await ctx.Engine._toolMig.GetCompletedObjectsAsync(ctx.OpenSql, ctx.Run.RunId, MigrationStage.DdlGeneration.ToString(), ct)
                 : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
+            static string ObjKey(string schema, string name, string type) => $"{schema}.{name}|{type}";
+            bool IsCompleted(string schema, string name, string type)
+                => completedObjects.Contains(ObjKey(schema, name, type)) || completedObjects.Contains($"{schema}.{name}");
+
+            async Task RunOneAsync(string schema, string name, string type, Func<Task> action)
+            {
+                ct.ThrowIfCancellationRequested();
+                if (IsCompleted(schema, name, type)) return;
+
+                await ctx.ToolMigObjectAsync(MigrationStage.DdlGeneration, schema, name, type, "InProgress", null, null);
+                try
+                {
+                    await action();
+                    await ctx.ToolMigObjectAsync(MigrationStage.DdlGeneration, schema, name, type, "Completed", null, null);
+                }
+                catch (Exception ex)
+                {
+                    errors.Add(StageError.FromException(MigrationStage.DdlGeneration, schema, name, ex));
+                    await ctx.ToolMigObjectAsync(MigrationStage.DdlGeneration, schema, name, type, "Failed", ex.GetType().Name, ex.Message);
+                    ctx.AppendLog($"[DdlGeneration][ERROR] {type} {schema}.{name}: {ex.Message}");
+                    if (ctx.StageMode == ErrorHandlingMode.FailFast) throw;
+                }
+            }
+
             try
             {
+                // 1) Tables (with PK/UQ/Indexes)
                 foreach (var t in ctx.Tables)
                 {
-                    ct.ThrowIfCancellationRequested();
-                    var key = $"{t.Schema}.{t.Table}";
-                    if (completedObjects.Contains(key))
-                        continue;
+                    var schema = t.Schema;
+                    var name = t.Table;
+                    await RunOneAsync(schema, name, "TABLE", async () =>
+                        await ctx.Engine.DeployTableAsync(ctx.OpenSql, ctx.OpenOra, ctx.Request.SourceDatabase, schema, name, ctx.GetTargetSchema(schema), ct));
+                }
 
-                    await ctx.ToolMigObjectAsync(MigrationStage.DdlGeneration, t.Schema, t.Table, "TABLE", "InProgress", null, null);
-                    try
+                if (ctx.Request.CreateDependentObjects)
+                {
+                    // 2) Types (UDT)
+                    foreach (var t in ctx.UserDefinedTypes)
                     {
-                        await ctx.Engine.DeployTableAsync(ctx.OpenSql, ctx.OpenOra, ctx.Request.SourceDatabase, t.Schema, t.Table, ctx.GetTargetSchema(t.Schema), ct);
-                        await ctx.ToolMigObjectAsync(MigrationStage.DdlGeneration, t.Schema, t.Table, "TABLE", "Completed", null, null);
+                        var schema = t.Schema;
+                        var name = t.Name;
+                        var baseType = t.UnderlyingType;
+                        await RunOneAsync(schema, name, "TYPE", async () =>
+                            await ctx.Engine.DeployUserDefinedTypeAsync(ctx.OpenSql, ctx.OpenOra, ctx.Request.SourceDatabase, schema, name, baseType, ctx.GetTargetSchema(schema), ctx.Request.CreateDependentObjectStubs, ctx.RunDir, ct));
                     }
-                    catch (Exception ex)
+
+                    // 3) Sequences
+                    foreach (var s in ctx.Sequences)
                     {
-                        errors.Add(StageError.FromException(MigrationStage.DdlGeneration, t.Schema, t.Table, ex));
-                        await ctx.ToolMigObjectAsync(MigrationStage.DdlGeneration, t.Schema, t.Table, "TABLE", "Failed", ex.GetType().Name, ex.Message);
-                        ctx.AppendLog($"[DdlGeneration][ERROR] {t.Schema}.{t.Table}: {ex.Message}");
-                        if (ctx.StageMode == ErrorHandlingMode.FailFast) throw;
+                        var schema = s.Schema;
+                        var name = s.Name;
+                        await RunOneAsync(schema, name, "SEQUENCE", async () =>
+                            await ctx.Engine.DeploySequenceAsync(ctx.OpenSql, ctx.OpenOra, ctx.Request.SourceDatabase, schema, name, ctx.GetTargetSchema(schema), ct));
+                    }
+
+                    // 4) Views
+                    foreach (var v in ctx.Views)
+                    {
+                        var schema = v.Schema;
+                        var name = v.Name;
+                        await RunOneAsync(schema, name, "VIEW", async () =>
+                            await ctx.Engine.DeployViewAsync(ctx.OpenSql, ctx.OpenOra, ctx.Request.SourceDatabase, schema, name, ctx.GetTargetSchema(schema), ctx.Request.CreateDependentObjectStubs, ctx.RunDir, ct));
+                    }
+
+                    // 5) Procedures
+                    foreach (var p in ctx.Procedures)
+                    {
+                        var schema = p.Schema;
+                        var name = p.Name;
+                        await RunOneAsync(schema, name, "PROCEDURE", async () =>
+                            await ctx.Engine.DeployProcedureAsync(ctx.OpenSql, ctx.OpenOra, ctx.Request.SourceDatabase, schema, name, ctx.GetTargetSchema(schema), ctx.Request.CreateDependentObjectStubs, ctx.RunDir, ct));
+                    }
+
+                    // 6) Functions
+                    foreach (var f in ctx.Functions)
+                    {
+                        var schema = f.Schema;
+                        var name = f.Name;
+                        await RunOneAsync(schema, name, "FUNCTION", async () =>
+                            await ctx.Engine.DeployFunctionAsync(ctx.OpenSql, ctx.OpenOra, ctx.Request.SourceDatabase, schema, name, ctx.GetTargetSchema(schema), ctx.Request.CreateDependentObjectStubs, ctx.RunDir, ct));
+                    }
+
+                    // 7) Triggers (need parent table/view)
+                    foreach (var tr in ctx.Triggers)
+                    {
+                        var schema = tr.Schema;
+                        var name = tr.Name;
+                        var parentSchema = tr.ParentSchema;
+                        var parentName = tr.ParentName;
+                        await RunOneAsync(schema, name, "TRIGGER", async () =>
+                            await ctx.Engine.DeployTriggerAsync(ctx.OpenSql, ctx.OpenOra, ctx.Request.SourceDatabase, schema, name, parentSchema, parentName, ctx.GetTargetSchema(parentSchema), ctx.Request.CreateDependentObjectStubs, ctx.RunDir, ct));
+                    }
+
+                    // 8) Synonyms
+                    foreach (var syn in ctx.Synonyms)
+                    {
+                        var schema = syn.Schema;
+                        var name = syn.Name;
+                        var baseObj = syn.BaseObjectName;
+                        await RunOneAsync(schema, name, "SYNONYM", async () =>
+                            await ctx.Engine.DeploySynonymAsync(ctx.OpenOra, schema, name, baseObj, ctx.GetTargetSchema(schema), ct));
                     }
                 }
 
