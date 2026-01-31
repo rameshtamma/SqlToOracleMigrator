@@ -60,8 +60,14 @@ public static class ConnectionStringBuilders
             dbaPriv = "DBA Privilege=SYSDBA;";
         }
 
+        // Connection resiliency defaults:
+        // - Pooling enabled for performance, with Validate Connection to avoid stale pooled sessions.
+        // - Higher connect/pool request timeout to reduce first-click failures.
+        // Note: pool request timeouts can surface as ORA-50000 from ODP.NET.
+        var extras = "Pooling=true;Validate Connection=true;Connection Timeout=30;Min Pool Size=0;Max Pool Size=20;Incr Pool Size=2;Decr Pool Size=1;";
+
         // Do not include Persist Security Info; keep it simple.
-        return $"User Id={user};Password={pass};{dbaPriv}Data Source={dataSource};";
+        return $"User Id={user};Password={pass};{dbaPriv}Data Source={dataSource};{extras}";
     }
 
     public static SqlConnection CreateOpenSqlConnection(ConnectionDefinition def, string? passwordOverride = null)

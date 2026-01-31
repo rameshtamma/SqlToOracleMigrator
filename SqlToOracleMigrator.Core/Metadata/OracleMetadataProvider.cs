@@ -122,7 +122,17 @@ public static void ValidateOracleIdentifier(string ident)
         ValidateOracleIdentifier(schema);
         var normLookup = OracleIdent.NormalizeSchemaForLookup(schema);
         var exists = await SchemaExistsAsync(openConnection, schema, cancellationToken);
-        if (exists) return;
+
+        // Always enforce a usable default tablespace + quota, even when the user already exists.
+        // Otherwise inserts can fail later with ORA-01950 (no privileges on tablespace 'SYSTEM').
+        var permTs = await GetPreferredPermanentTablespaceAsync(openConnection, cancellationToken);
+        var tempTs = await GetPreferredTemporaryTablespaceAsync(openConnection, cancellationToken);
+
+        if (exists)
+        {
+            await EnsureUserStorageAsync(openConnection, schema, permTs, tempTs, cancellationToken);
+            return;
+        }
 
         if (!autoCreate)
             throw new InvalidOperationException($"Target schema/user '{schema}' does not exist.");
@@ -145,7 +155,7 @@ public static void ValidateOracleIdentifier(string ident)
         _logger.Info($"[SchemaProvisioning] Creating Oracle user/schema {userName} (temporary password generated).");
 
         // Note: Do NOT quote usernames unless necessary; quoted identifiers become case-sensitive.
-        var createSql = $"CREATE USER {userName} IDENTIFIED BY \"{tempPassword}\"";
+        var createSql = $"CREATE USER {userName} IDENTIFIED BY \"{tempPassword}\" DEFAULT TABLESPACE {permTs} TEMPORARY TABLESPACE {tempTs}";
         await using (var createCmd = new OracleCommand(createSql, openConnection))
         {
             await createCmd.ExecuteNonQueryAsync(cancellationToken);
@@ -175,19 +185,115 @@ public static void ValidateOracleIdentifier(string ident)
             }
         }
 
-        // Try to set an unlimited quota (best-effort). The tablespace name varies; USERS is common.
-        try
-        {
-            await using var quotaCmd = new OracleCommand($"ALTER USER {userName} QUOTA UNLIMITED ON USERS", openConnection);
-            await quotaCmd.ExecuteNonQueryAsync(cancellationToken);
-        }
-        catch (Exception ex)
-        {
-            _logger.Warn($"[SchemaProvisioning] Could not set quota on USERS tablespace for {userName}: {ex.Message}");
-        }
+        await EnsureUserStorageAsync(openConnection, schema, permTs, tempTs, cancellationToken);
 
         // Lock/expire user by default? NO — tool expects schema usable for object creation.
         _logger.Info($"[SchemaProvisioning] Created Oracle schema/user {userName}.");
+    }
+
+    private async Task<string> GetPreferredPermanentTablespaceAsync(OracleConnection openConnection, CancellationToken ct)
+    {
+        // Prefer USERS if present, else choose any online permanent tablespace that is not SYSTEM/SYSAUX/UNDO.
+        var candidates = new List<string>();
+        try
+        {
+            const string sql = @"
+SELECT tablespace_name
+FROM   dba_tablespaces
+WHERE  contents = 'PERMANENT'
+  AND  status   = 'ONLINE'";
+
+            await using var cmd = new OracleCommand(sql, openConnection);
+            await using var rdr = await cmd.ExecuteReaderAsync(ct);
+            while (await rdr.ReadAsync(ct))
+            {
+                var ts = rdr.GetString(0);
+                if (string.IsNullOrWhiteSpace(ts)) continue;
+                candidates.Add(ts.Trim().ToUpperInvariant());
+            }
+        }
+        catch
+        {
+            // If we can't read DBA views (restricted env), fall back to USERS as a best guess.
+            return "USERS";
+        }
+
+        if (candidates.Contains("USERS")) return "USERS";
+
+        // Pick a safe non-system permanent tablespace if possible.
+        foreach (var ts in candidates)
+        {
+            if (ts is "SYSTEM" or "SYSAUX") continue;
+            if (ts.StartsWith("UNDO", StringComparison.OrdinalIgnoreCase)) continue;
+            if (ts.StartsWith("TEMP", StringComparison.OrdinalIgnoreCase)) continue;
+            return ts;
+        }
+
+        // As a last resort (XE minimal installs), use SYSTEM. We'll grant quota on SYSTEM to avoid ORA-01950.
+        return "SYSTEM";
+    }
+
+    private async Task<string> GetPreferredTemporaryTablespaceAsync(OracleConnection openConnection, CancellationToken ct)
+    {
+        var candidates = new List<string>();
+        try
+        {
+            const string sql = @"
+SELECT tablespace_name
+FROM   dba_tablespaces
+WHERE  contents = 'TEMPORARY'
+  AND  status   = 'ONLINE'";
+
+            await using var cmd = new OracleCommand(sql, openConnection);
+            await using var rdr = await cmd.ExecuteReaderAsync(ct);
+            while (await rdr.ReadAsync(ct))
+            {
+                var ts = rdr.GetString(0);
+                if (string.IsNullOrWhiteSpace(ts)) continue;
+                candidates.Add(ts.Trim().ToUpperInvariant());
+            }
+        }
+        catch
+        {
+            return "TEMP";
+        }
+
+        if (candidates.Contains("TEMP")) return "TEMP";
+        return candidates.Count > 0 ? candidates[0] : "TEMP";
+    }
+
+    private async Task EnsureUserStorageAsync(
+        OracleConnection openConnection,
+        string schema,
+        string permanentTablespace,
+        string tempTablespace,
+        CancellationToken ct)
+    {
+        var userName = OracleIdent.FormatSchema(schema);
+
+        // Set default/temp tablespace (best-effort)
+        try
+        {
+            await using var cmd = new OracleCommand(
+                $"ALTER USER {userName} DEFAULT TABLESPACE {permanentTablespace} TEMPORARY TABLESPACE {tempTablespace}",
+                openConnection);
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.Warn($"[SchemaProvisioning] Could not set DEFAULT/TEMP tablespace for {userName}: {ex.Message}");
+        }
+
+        // Ensure quota on chosen permanent tablespace (best-effort)
+        try
+        {
+            await using var quotaCmd = new OracleCommand($"ALTER USER {userName} QUOTA UNLIMITED ON {permanentTablespace}", openConnection);
+            await quotaCmd.ExecuteNonQueryAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.Warn($"[SchemaProvisioning] Could not set quota on {permanentTablespace} tablespace for {userName}: {ex.Message}");
+        }
     }
 
     /// <summary>

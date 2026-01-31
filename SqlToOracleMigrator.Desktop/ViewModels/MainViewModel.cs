@@ -28,10 +28,15 @@ public sealed class MainViewModel : NotifyBase
 
     public AsyncRelayCommand NewConnectionCommand { get; private set; } = new(async () => await Task.CompletedTask);
     public AsyncRelayCommand RefreshInventoryCommand { get; private set; } = new(async () => await Task.CompletedTask);
+    public AsyncRelayCommand CreateTargetPdbCommand { get; private set; } = new(async () => await Task.CompletedTask);
+    public AsyncRelayCommand ValidateMigrationCommand { get; private set; } = new(async () => await Task.CompletedTask);
     public RelayCommand OpenLogsFolderCommand { get; private set; } = new(() => { });
     public RelayCommand ClearLogsCommand { get; private set; } = new(() => { });
 
     private AppServices? _services;
+
+    // Used as a default for PDB creation (Create Target PDB button)
+    private string? _lastSelectedSqlDatabaseName;
 
     public MainViewModel()
     {
@@ -50,6 +55,8 @@ public sealed class MainViewModel : NotifyBase
 
         NewConnectionCommand = new AsyncRelayCommand(OpenNewConnectionWizardAsync);
         RefreshInventoryCommand = new AsyncRelayCommand(RefreshInventoryAsync);
+        CreateTargetPdbCommand = new AsyncRelayCommand(CreateTargetPdbAsync);
+        ValidateMigrationCommand = new AsyncRelayCommand(OpenValidateMigrationAsync);
         OpenLogsFolderCommand = new RelayCommand(OpenLogsFolder);
         ClearLogsCommand = new RelayCommand(() => LogEntries.Clear());
 
@@ -78,6 +85,23 @@ public sealed class MainViewModel : NotifyBase
         AppendLog("Application initialized.");
     }
 
+
+
+    private async Task OpenValidateMigrationAsync()
+    {
+        if (_services is null) return;
+        try
+        {
+            var win = new ValidateMigrationWindow(_services) { Owner = Application.Current?.MainWindow };
+            win.ShowDialog();
+        }
+        catch (Exception ex)
+        {
+            AppendLog($"Open validation window failed: {ex.Message}");
+        }
+
+        await Task.CompletedTask;
+    }
     public void AppendLog(string message)
     {
         Application.Current.Dispatcher.Invoke(() =>
@@ -121,8 +145,40 @@ public sealed class MainViewModel : NotifyBase
 
             case DatabaseNodeViewModel dbNode:
                 StatusText = $"Selected DB: {dbNode.DatabaseName}";
+                _lastSelectedSqlDatabaseName = dbNode.DatabaseName;
                 await LoadInventoryForSqlDatabaseAsync(dbNode.ParentConnection, dbNode.DatabaseName);
                 break;
+        }
+    }
+
+    private async Task CreateTargetPdbAsync()
+    {
+        if (_services is null) return;
+
+        try
+        {
+            var defaultName = string.IsNullOrWhiteSpace(_lastSelectedSqlDatabaseName)
+                ? "AdventureWorks2025"
+                : _lastSelectedSqlDatabaseName!;
+
+            var vm = new CreatePdbInstanceViewModel(_services, defaultName);
+            var win = new CreatePdbInstanceWindow
+            {
+                Owner = Application.Current.MainWindow,
+                DataContext = vm
+            };
+
+            var ok = win.ShowDialog();
+            if (ok == true)
+            {
+                LoadConnectionsTree();
+                StatusText = $"Created/ensured PDB '{vm.ResolvedPdbName}' and saved connection '{vm.SavedConnectionName}'.";
+            }
+        }
+        catch (Exception ex)
+        {
+            _services.Logger.Error("Create Target PDB failed.", ex);
+            MessageBox.Show(ex.Message, "Create Target PDB", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 

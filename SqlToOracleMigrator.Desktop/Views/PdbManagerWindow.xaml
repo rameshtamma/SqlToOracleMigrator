@@ -1,0 +1,53 @@
+<Window x:Class="SqlToOracleMigrator.Desktop.Views.PdbManagerWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="PDB Manager" Height="540" Width="820"
+        WindowStartupLocation="CenterOwner">
+
+    <Grid Margin="14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Margin="0,0,0,10">
+            <TextBlock Text="Pluggable Database Manager" FontSize="16" FontWeight="SemiBold"/>
+            <TextBlock Text="Lists PDBs in the target CDB. You can delete selected PDBs (INCLUDING DATAFILES). Requires SYSDBA." Foreground="#666" TextWrapping="Wrap" Margin="0,6,0,0"/>
+        </StackPanel>
+
+        <DataGrid Grid.Row="1"
+                  ItemsSource="{Binding Pdbs}"
+                  AutoGenerateColumns="False"
+                  CanUserAddRows="False"
+                  IsReadOnly="False"
+                  HeadersVisibility="Column"
+                  GridLinesVisibility="Horizontal">
+            <DataGrid.Columns>
+                <DataGridCheckBoxColumn Header="Delete" Binding="{Binding IsSelected}" Width="70"/>
+                <DataGridTextColumn Header="PDB Name" Binding="{Binding Name}" Width="2*" IsReadOnly="True"/>
+                <DataGridTextColumn Header="Open Mode" Binding="{Binding OpenMode}" Width="*" IsReadOnly="True"/>
+                <DataGridTextColumn Header="Restricted" Binding="{Binding Restricted}" Width="*" IsReadOnly="True"/>
+                <DataGridTextColumn Header="Notes" Binding="{Binding Notes}" Width="2*" IsReadOnly="True"/>
+            </DataGrid.Columns>
+        </DataGrid>
+
+        <Grid Grid.Row="2" Margin="0,12,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+
+            <StackPanel Grid.Column="0">
+                <TextBlock Text="{Binding Status}" Foreground="#333"/>
+                <TextBlock Text="{Binding Error}" Foreground="#B00020" TextWrapping="Wrap" Margin="0,4,0,0"/>
+            </StackPanel>
+
+            <Button Grid.Column="1" Content="Refresh" Width="110" Height="32" Margin="10,0,0,0" Command="{Binding RefreshCommand}"/>
+            <Button Grid.Column="2" Content="Delete Selected" Width="140" Height="32" Margin="10,0,0,0" Command="{Binding DeleteSelectedCommand}"/>
+            <Button Grid.Column="3" Content="Close" Width="100" Height="32" Margin="10,0,0,0" IsCancel="True"/>
+        </Grid>
+    </Grid>
+</Window>

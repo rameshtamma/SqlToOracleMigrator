@@ -220,6 +220,15 @@ public sealed class MigrationRequest
     public bool EnsureTargetPdb { get; init; } = true;
 
     /// <summary>
+    /// When true and EnsureTargetPdb=true, if the target PDB already exists the engine will drop it
+    /// (INCLUDING DATAFILES) and recreate it. This is useful when a prior run partially created the PDB
+    /// and you want a clean, deterministic environment.
+    /// 
+    /// Guardrails: the engine will not drop protected PDBs (PDB$SEED, XEPDB*).
+    /// </summary>
+    public bool DropTargetPdbIfExists { get; init; } = false;
+
+    /// <summary>
     /// Target PDB name to ensure/switch to (default Adventureworks2025).
     /// </summary>
     public string TargetPdbName { get; init; } = "Adventureworks2025";

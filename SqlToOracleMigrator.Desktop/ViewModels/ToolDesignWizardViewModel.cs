@@ -17,6 +17,11 @@ public sealed class ToolDesignWizardViewModel : NotifyBase
     private string _targetSchema = "";
     private string _dop = "4";
 
+    // v6.3 UI additions: target PDB/connection naming
+    private string _targetPdbConnectionName = "";
+    private bool _overrideExistingTargetPdbConnection = true;
+    private bool _dropTargetPdbIfExists = true;
+
     // v6 options
     private bool _cloneSourceSchemas = true;
     private bool _autoCreateTargetSchemas = true;
@@ -51,6 +56,10 @@ public sealed class ToolDesignWizardViewModel : NotifyBase
         SourceConnectionName = _sourceSql.Name;
         SourceDatabase = _sourceDatabase;
 
+        // Default target PDB/connection name to the source DB name; allow user override.
+        _targetPdbConnectionName = _sourceDatabase;
+        _overrideExistingTargetPdbConnection = true;
+
         TargetOracleConnections = new ObservableCollection<string>();
 
         TypeMappings = new ObservableCollection<TypeMappingRow>();
@@ -58,6 +67,7 @@ public sealed class ToolDesignWizardViewModel : NotifyBase
 
         StartCommand = new AsyncRelayCommand(StartAsync, CanStart);
         RefreshTargetsCommand = new RelayCommand(RefreshTargets);
+        ManagePdbsCommand = new AsyncRelayCommand(ManagePdbsAsync, CanManagePdbs);
 
         BackCommand = new RelayCommand(GoBack, () => CurrentStepIndex > 0);
         NextCommand = new RelayCommand(GoNext, CanGoNext);
@@ -90,9 +100,70 @@ public sealed class ToolDesignWizardViewModel : NotifyBase
                 StartCommand.RaiseCanExecuteChanged();
                 NextCommand.RaiseCanExecuteChanged();
                 FinishCommand.RaiseCanExecuteChanged();
+                ManagePdbsCommand.RaiseCanExecuteChanged();
             }
         }
     }
+
+    /// <summary>
+    /// Display name for the target Oracle *PDB connection* that the wizard will create/save for this migration.
+    /// Defaults to the source database name (e.g., AdventureWorks2025).
+    /// </summary>
+    public string TargetPdbConnectionName
+    {
+        get => _targetPdbConnectionName;
+        set
+        {
+            if (Set(ref _targetPdbConnectionName, value))
+            {
+                StartCommand.RaiseCanExecuteChanged();
+                NextCommand.RaiseCanExecuteChanged();
+                FinishCommand.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    /// <summary>
+    /// When true, overwrite an existing saved connection with the same TargetPdbConnectionName.
+    /// When false and a name conflict exists, the wizard will automatically append _V1 / _V2 ...
+    /// </summary>
+    public bool OverrideExistingTargetPdbConnection
+    {
+        get => _overrideExistingTargetPdbConnection;
+        set
+        {
+            if (Set(ref _overrideExistingTargetPdbConnection, value))
+            {
+                // Default drop behavior to match override intent.
+                if (value && !DropTargetPdbIfExists)
+                    DropTargetPdbIfExists = true;
+
+                StartCommand.RaiseCanExecuteChanged();
+                NextCommand.RaiseCanExecuteChanged();
+                FinishCommand.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    /// <summary>
+    /// When true, drop the target PDB (INCLUDING DATAFILES) if it already exists, then recreate.
+    /// Useful for cleaning up partial/failed runs. Requires SYSDBA.
+    /// </summary>
+    public bool DropTargetPdbIfExists
+    {
+        get => _dropTargetPdbIfExists;
+        set
+        {
+            if (Set(ref _dropTargetPdbIfExists, value))
+            {
+                StartCommand.RaiseCanExecuteChanged();
+                NextCommand.RaiseCanExecuteChanged();
+                FinishCommand.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    public AsyncRelayCommand ManagePdbsCommand { get; }
 
     public string TargetSchema
     {
@@ -321,6 +392,8 @@ public sealed class ToolDesignWizardViewModel : NotifyBase
     {
         if (string.IsNullOrWhiteSpace(SelectedTargetOracleName)) return false;
 
+        if (string.IsNullOrWhiteSpace(TargetPdbConnectionName)) return false;
+
         if (ResumePreviousRun && SelectedResumeRun is null) return false;
 
         // In clone-mode (multi-schema), the per-schema target is derived from source schemas.
@@ -393,6 +466,29 @@ public sealed class ToolDesignWizardViewModel : NotifyBase
             await EnsurePasswordLoadedAsync(_sourceSql);
             await EnsurePasswordLoadedAsync(targetDef);
 
+            // New flow: Target PDB is created ahead of time via MainWindow "Create Target PDB".
+            // Migration requires that the selected Oracle connection is already pointing at a PDB (not CDB$ROOT).
+            try
+            {
+                await using var open = ConnectionStringBuilders.CreateOpenOracleConnection(targetDef);
+                var conName = await OraclePdbAdmin.GetCurrentContainerAsync(open, CancellationToken.None);
+                if (string.Equals(conName, "CDB$ROOT", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidOperationException(
+                        "Selected Oracle connection is pointing at CDB$ROOT (XE/root). " +
+                        "Please use the 'Create Target PDB' button in the main window to create a PDB and save a PDB connection, " +
+                        "then select that PDB connection here before starting migration.");
+                }
+            }
+            catch (InvalidOperationException)
+            {
+                throw;
+            }
+            catch
+            {
+                // If we cannot determine container, proceed; downstream DDL will fail with a clearer error.
+            }
+
             // Target schema strategy:
             // - CloneSourceSchemas=true: Oracle schema name comes from each source schema (1:1). TargetSchema is not required.
             // - CloneSourceSchemas=false: all objects migrate into TargetSchema.
@@ -437,7 +533,11 @@ public sealed class ToolDesignWizardViewModel : NotifyBase
 
                 // v6.2: strict resume + run-mode
                 ResumeRunId = (ResumePreviousRun ? SelectedResumeRun?.RunId : null),
-                ErrorHandlingMode = SelectedErrorHandlingMode
+                ErrorHandlingMode = SelectedErrorHandlingMode,
+
+                // New flow: caller must already select a PDB connection.
+                EnsureTargetPdb = false,
+                DropTargetPdbIfExists = false
             };
 
             // Run in background so UI remains responsive; progress is surfaced in MainWindow.
@@ -535,11 +635,141 @@ public sealed class ToolDesignWizardViewModel : NotifyBase
                     SelectedErrorHandlingMode = m;
             }
 
+            if (root.TryGetProperty("TargetPdbName", out var v9) && v9.ValueKind == System.Text.Json.JsonValueKind.String)
+            {
+                var pdb = v9.GetString();
+                if (!string.IsNullOrWhiteSpace(pdb))
+                    TargetPdbConnectionName = pdb!;
+            }
+
             ResumeStatus = $"Loaded settings from run v{opt.Version} (best-effort).";
         }
         catch
         {
             // ignore; resume can still proceed
+        }
+    }
+
+    // ----------------------------
+    // v6.3 helpers (PDB connection naming)
+    // ----------------------------
+    private static string NormalizeOracleIdentifierForPdb(string input)
+    {
+        var raw = input.Trim();
+        // Keep it simple and deterministic: replace whitespace with underscores.
+        raw = string.Join("_", raw.Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries));
+        OracleMetadataProvider.ValidateOracleIdentifier(raw);
+        return OracleIdent.FormatSchema(raw);
+    }
+
+    private static string ResolveUniqueName(string desired, IEnumerable<string> existingNames, bool allowOverwrite)
+    {
+        var desiredTrim = desired.Trim();
+        if (string.IsNullOrWhiteSpace(desiredTrim))
+            return desiredTrim;
+
+        var set = new HashSet<string>(existingNames.Where(n => !string.IsNullOrWhiteSpace(n)), StringComparer.OrdinalIgnoreCase);
+        if (allowOverwrite || !set.Contains(desiredTrim))
+            return desiredTrim;
+
+        // Requirement: append _V1 if conflict exists.
+        var baseName = desiredTrim;
+        for (var i = 1; i <= 99; i++)
+        {
+            var candidate = $"{baseName}_V{i}";
+            if (!set.Contains(candidate))
+                return candidate;
+        }
+        // Extremely unlikely; fallback to GUID suffix.
+        return $"{baseName}_V{Guid.NewGuid():N}";
+    }
+
+    private static ConnectionDefinition CreatePdbConnectionDefinition(string connectionName, string pdbName, ConnectionDefinition from)
+    {
+        // Create a new connection definition pointing at the PDB service name.
+        return new ConnectionDefinition
+        {
+            Name = connectionName,
+            Engine = DatabaseEngine.Oracle,
+
+            Hostname = from.Hostname,
+            Port = from.Port,
+
+            Username = from.Username,
+            UseWindowsAuthentication = false,
+            SavePassword = from.SavePassword,
+            EncryptedPassword = from.EncryptedPassword,
+            RuntimePassword = from.RuntimePassword,
+
+            AuthenticationType = from.AuthenticationType,
+            ConnectionType = from.ConnectionType,
+            Role = from.Role,
+
+            // Service-based connect for PDB
+            UseSid = false,
+            Sid = null,
+            ServiceName = pdbName,
+
+            Region = from.Region,
+            Notes = from.Notes,
+            Color = from.Color
+        };
+    }
+
+    // ----------------------------
+    // PDB Manager (utility)
+    // ----------------------------
+    private bool CanManagePdbs()
+    {
+        if (string.IsNullOrWhiteSpace(SelectedTargetOracleName)) return false;
+        var def = _services.ConnectionManager.GetConnected(DatabaseEngine.Oracle)
+            .FirstOrDefault(d => string.Equals(d.Name, SelectedTargetOracleName, StringComparison.OrdinalIgnoreCase));
+        if (def is null) return false;
+        if (def.LastTestStatus != ConnectionTestStatus.Green) return false;
+        return IsOracleAdminConnection(def);
+    }
+
+    private static bool IsOracleAdminConnection(ConnectionDefinition def)
+    {
+        var u = (def.Username ?? "").Trim();
+        var r = (def.Role ?? "").Trim();
+        // Accept either SYS user, or explicit SYSDBA role.
+        if (u.Equals("SYS", StringComparison.OrdinalIgnoreCase)) return true;
+        if (r.Equals("SYSDBA", StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
+    }
+
+    private async Task ManagePdbsAsync()
+    {
+        Error = "";
+        try
+        {
+            var targetDef = _services.ConnectionManager.GetConnected(DatabaseEngine.Oracle)
+                .FirstOrDefault(d => string.Equals(d.Name, SelectedTargetOracleName, StringComparison.OrdinalIgnoreCase));
+            if (targetDef is null)
+                throw new InvalidOperationException("Selected Oracle connection is not connected.");
+
+            if (!IsOracleAdminConnection(targetDef))
+                throw new InvalidOperationException("PDB Manager requires SYS/SYSDBA. Select an Oracle connection that uses SYS or SYSDBA role.");
+
+            // Ensure the connection is open.
+            var open = _services.ConnectionManager.TryGetOpenOracle(targetDef.Name);
+            if (open is null)
+                throw new InvalidOperationException("Oracle connection is not active. Connect it first from the Connections panel.");
+
+            var vm = new PdbManagerViewModel(_services, targetDef.Name);
+            var win = new PdbManagerWindow
+            {
+                Owner = Application.Current.MainWindow,
+                DataContext = vm
+            };
+
+            win.ShowDialog();
+            await Task.Yield();
+        }
+        catch (Exception ex)
+        {
+            Error = ex.Message;
         }
     }
 

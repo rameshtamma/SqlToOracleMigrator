@@ -131,6 +131,7 @@
                                     <RowDefinition Height="Auto"/>
                                     <RowDefinition Height="Auto"/>
                                     <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
                                 </Grid.RowDefinitions>
 
                                 <TextBlock Grid.Row="0" Grid.Column="0" Text="Oracle Connection" VerticalAlignment="Center"/>
@@ -139,6 +140,7 @@
                                               ItemsSource="{Binding TargetOracleConnections}"
                                               SelectedItem="{Binding SelectedTargetOracleName}"/>
                                     <Button Content="Refresh" Width="90" Margin="10,0,0,0" Command="{Binding RefreshTargetsCommand}"/>
+                                    <Button Content="Manage PDBs" Width="110" Margin="10,0,0,0" Command="{Binding ManagePdbsCommand}"/>
                                 </DockPanel>
 
                                 <TextBlock Grid.Row="1" Grid.Column="0" Text="Schema Strategy" VerticalAlignment="Top" Margin="0,10,0,0"/>
@@ -168,7 +170,7 @@
 
                         <Border BorderBrush="#D0D0D0" BorderThickness="1" Padding="10">
                             <TextBlock TextWrapping="Wrap" Foreground="#555"
-                                       Text="Notes: Oracle schemas are users. In clone mode, each source schema is created/mapped 1:1 on the target (unquoted, resolved as UPPERCASE). In single-schema mode, Target Schema/User must exist (or enable auto-create) and the connected Oracle account must have privileges to create objects."/>
+                                       Text="Notes: Create/select your target PDB connection in the main window (Create Target PDB). In clone mode, each source schema is created/mapped 1:1 on the target (unquoted, resolved as UPPERCASE). In single-schema mode, Target Schema/User must exist (or enable auto-create) and the connected Oracle account must have privileges to create objects."/>
                         </Border>
                     </StackPanel>
                 </ScrollViewer>

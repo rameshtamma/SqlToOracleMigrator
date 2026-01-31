@@ -84,10 +84,13 @@ ORDER BY s.name, o.name;";
     private async Task<List<(string Schema, string Name, string ParentSchema, string ParentName)>> DiscoverTriggersAsync(SqlConnection openSql, string dbName, CancellationToken cancellationToken)
     {
         var db = SqlIdent.Bracket(dbName);
+        // NOTE: sys.triggers does NOT expose schema_id in SQL Server; schema is on sys.objects.
+        // Join through sys.objects (trigger object) to resolve trigger schema.
         var sql = $@"SELECT ts.name AS TriggerSchema, tr.name AS TriggerName,
        ps.name AS ParentSchema, po.name AS ParentName
 FROM {db}.sys.triggers tr
-JOIN {db}.sys.schemas ts ON tr.schema_id = ts.schema_id
+JOIN {db}.sys.objects tro ON tr.object_id = tro.object_id
+JOIN {db}.sys.schemas ts ON tro.schema_id = ts.schema_id
 JOIN {db}.sys.objects po ON tr.parent_id = po.object_id
 JOIN {db}.sys.schemas ps ON po.schema_id = ps.schema_id
 WHERE tr.is_ms_shipped = 0

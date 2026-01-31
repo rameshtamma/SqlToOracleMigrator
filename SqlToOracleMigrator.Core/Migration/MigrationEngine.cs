@@ -74,15 +74,46 @@ public sealed partial class MigrationEngine
         // Optional: ensure/switch to a target PDB (Adventureworks2025) when SYSDBA is used.
         if (request.EnsureTargetPdb && !string.IsNullOrWhiteSpace(request.TargetPdbName))
         {
+            Exception? pdbEx = null;
             try
             {
                 _logger.Info($"[Oracle] EnsureTargetPdb=true. Ensuring/switching to PDB '{request.TargetPdbName}'...");
-                await EnsureAndSwitchToPdbAsync(openOra, request.TargetPdbName, request.TargetOracleConnection.RuntimePassword ?? string.Empty, cancellationToken);
+                await EnsureAndSwitchToPdbAsync(
+                    openOra,
+                    request.TargetPdbName,
+                    request.TargetOracleConnection.RuntimePassword ?? string.Empty,
+                    request.DropTargetPdbIfExists,
+                    cancellationToken);
             }
             catch (Exception ex)
             {
+                pdbEx = ex;
                 _logger.Warn($"[Oracle] PDB ensure/switch failed: {ex.Message}");
-                // Continue - some environments do not allow PDB operations.
+            }
+
+            // v6.3 guardrail: do not proceed with schema/object creation in CDB$ROOT.
+            try
+            {
+                var conName = await GetOracleContainerNameAsync(openOra, cancellationToken);
+                if (string.Equals(conName, "CDB$ROOT", StringComparison.OrdinalIgnoreCase))
+                {
+                    var msg = "Connected to Oracle container 'CDB$ROOT'. A PDB is required for this migration. " +
+                              "The wizard can start from an XE/root connection, but PDB ensure/switch must succeed. " +
+                              "Please connect using a PDB service (e.g., XEPDB1) OR configure DB_CREATE_FILE_DEST / FILE_NAME_CONVERT permissions so the tool can create/switch to the target PDB, then retry.";
+
+                    if (pdbEx is not null)
+                        msg += $" (PDB error: {pdbEx.Message})";
+
+                    throw new InvalidOperationException(msg);
+                }
+            }
+            catch (InvalidOperationException)
+            {
+                throw;
+            }
+            catch
+            {
+                // If we cannot determine container name, continue (best effort).
             }
         }
 
@@ -104,7 +135,16 @@ public sealed partial class MigrationEngine
             request.DataValidationRowLimit,
             request.ValidateFullDataset,
             request.DegreeOfParallelism,
-            request.ErrorHandlingMode
+            request.ErrorHandlingMode,
+
+            // v6.3
+            request.OverrideTargetObjectsEachRun,
+            request.EnsureTargetPdb,
+            request.TargetPdbName,
+            request.CreateDependentObjects,
+            request.CreateDependentObjectStubs,
+            request.CreateForeignKeys,
+            request.ForeignKeysEnableNoValidate
         }, new JsonSerializerOptions { WriteIndented = true });
 
         ToolMigRunInfo run;
@@ -230,5 +270,14 @@ public sealed partial class MigrationEngine
             AppendConvertLog("[Finalization] Migration run FAILED.");
             throw;
         }
+    }
+
+    private static async Task<string> GetOracleContainerNameAsync(Oracle.ManagedDataAccess.Client.OracleConnection openOra, CancellationToken ct)
+    {
+        if (openOra is null) throw new ArgumentNullException(nameof(openOra));
+        await using var cmd = openOra.CreateCommand();
+        cmd.CommandText = "SELECT sys_context('USERENV','CON_NAME') FROM dual";
+        var val = await cmd.ExecuteScalarAsync(ct);
+        return (val?.ToString() ?? string.Empty).Trim();
     }
 }

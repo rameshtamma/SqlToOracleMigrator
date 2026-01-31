@@ -1,6 +1,7 @@
 ﻿using Microsoft.Data.SqlClient;
 using Oracle.ManagedDataAccess.Client;
 using Oracle.ManagedDataAccess.Types;
+//using SqlToOracleMigrator.Core.Metadata;
 using SqlToOracleMigrator.Core.Migration;
 using SqlToOracleMigrator.Core.Tracking;
 using System.Collections.Concurrent;
@@ -216,17 +217,17 @@ try
         acquiredOraGate = true;
     }
 
-var columns = await _sqlMeta.GetTableColumnsAsync(openSql, dbName, schema, table, cancellationToken);
+        var columns = await _sqlMeta.GetTableColumnsAsync(openSql, dbName, schema, table, cancellationToken);
         if (columns.Count == 0) return;
 
+        // IMPORTANT: Avoid SELECT * for special SQL Server types (e.g., hierarchyid). Instead, project explicit columns with
+        // safe casts so the ADO.NET reader yields stable CLR types.
         var colNames = columns.OrderBy(c => c.Ordinal).Select(c => c.ColumnName).ToList();
 
-        var db = SqlIdent.Bracket(dbName);
-        var selectSql = _queries.Format("SqlSelectTableAll", new Dictionary<string, string> { ["db"] = db });
+        // DataMigration reads full dataset.
+        var selectSql = BuildSqlSelectForTable(schema, table, columns, useTopN: false);
 
         await using var selectCmd = new SqlCommand(selectSql, openSql);
-        selectCmd.Parameters.AddWithValue("@SchemaName", schema);
-        selectCmd.Parameters.AddWithValue("@TableName", table);
         selectCmd.CommandTimeout = 0;
 
         var schemaPrefix = OracleIdent.FormatSchema(targetSchema);
@@ -340,7 +341,34 @@ finally
         try { await sqlPerTable.DisposeAsync(); } catch { }
     }
 }
-    }
+
+}
+
+// Build a stable SELECT projection for a table (avoids SELECT * for special types).
+private static string BuildSqlSelectForTable(string schema, string table, IReadOnlyList<SqlTableColumn> columns, bool useTopN)
+{
+    var selectList = string.Join(",", columns
+        .OrderBy(c => c.Ordinal)
+        .Select(BuildSqlSelectExprForColumn));
+
+    var from = $"{SqlIdent.Bracket(schema)}.{SqlIdent.Bracket(table)}";
+
+    if (useTopN)
+        return $"SELECT TOP (@TopN) {selectList} FROM {from};";
+
+    return $"SELECT {selectList} FROM {from};";
+}
+
+private static string BuildSqlSelectExprForColumn(SqlTableColumn c)
+{
+    var col = SqlIdent.Bracket(c.ColumnName);
+
+    // hierarchyid: CAST to VARBINARY so the reader returns byte[]/SqlBinary and we can bind to Oracle RAW reliably.
+    if (string.Equals(c.SqlTypeName, "hierarchyid", StringComparison.OrdinalIgnoreCase))
+        return $"CAST({col} AS varbinary(max)) AS {col}";
+
+    return col;
+}
 
 private async Task ValidateTableDataAsync(
         SqlConnection openSql,
@@ -353,26 +381,19 @@ private async Task ValidateTableDataAsync(
         int rowLimit,
         CancellationToken cancellationToken)
     {
+        // Ensure we're validating against the intended source DB.
+        try { openSql.ChangeDatabase(dbName); } catch { /* best effort */ }
+
         var columns = await _sqlMeta.GetTableColumnsAsync(openSql, dbName, schema, table, cancellationToken);
         if (columns.Count == 0) return;
 
         var colNames = columns.OrderBy(c => c.Ordinal).Select(c => c.ColumnName).ToList();
 
-        var db = SqlIdent.Bracket(dbName);
-
-        string selectSql;
-        if (validateFullDataset)
-        {
-            selectSql = _queries.Format("SqlSelectTableAll", new Dictionary<string, string> { ["db"] = db });
-        }
-        else
-        {
-            selectSql = _queries.Format("SqlSelectTableTopN", new Dictionary<string, string> { ["db"] = db });
-        }
+        // IMPORTANT: Avoid SELECT * for special SQL Server types (e.g., hierarchyid). Instead, project explicit columns with
+        // safe casts so the ADO.NET reader yields stable CLR types.
+        var selectSql = BuildSqlSelectForTable(schema, table, columns, useTopN: !validateFullDataset);
 
         await using var selectCmd = new SqlCommand(selectSql, openSql);
-        selectCmd.Parameters.AddWithValue("@SchemaName", schema);
-        selectCmd.Parameters.AddWithValue("@TableName", table);
         if (!validateFullDataset)
             selectCmd.Parameters.AddWithValue("@TopN", Math.Max(1, rowLimit));
 
@@ -422,105 +443,105 @@ if ((meta.DbType == OracleDbType.Raw || meta.DbType == OracleDbType.LongRaw) && 
     insertCmd.Parameters.Add(p);
 }
 
-const int maxPreviewChars = 256;
+        const int maxPreviewChars = 256;
         var written = 0;
         long rowNumber = 0;
-        await using var rdr = await selectCmd.ExecuteReaderAsync(cancellationToken);
-        while (await rdr.ReadAsync(cancellationToken))
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            rowNumber++;
 
-            // DataValidation does not commit; keep batch fields deterministic for diagnostics.
-            var batchNumber = 0;
-            var batchRowIndex = rowNumber > int.MaxValue ? int.MaxValue : (int)rowNumber;
-
-            for (var i = 0; i < colNames.Count; i++)
-            {
-                object? rawValue = rdr.IsDBNull(i) ? null : rdr.GetValue(i);
-
-                TryAssignOracleParameterValue(
-                    stage: "DataValidation",
-                    schema: schema,
-                    table: table,
-                    rowNumber: rowNumber,
-                    batchNumber: batchNumber,
-                    batchRowIndex: batchRowIndex,
-                    sourceColumn: colNames[i],
-                    targetColumn: colNames[i],
-                    param: insertCmd.Parameters[i],
-                    rawValue: rawValue,
-                    maxPreviewChars: maxPreviewChars);
-            }
-
-try
-{
-    await insertCmd.ExecuteNonQueryAsync(cancellationToken);
-}
-catch (ArgumentException aex)
-{
-    // ORA-50028 is surfaced by ODP.NET as ArgumentException during pre-bind. Dump param metadata for root-cause.
-    var paramDump = string.Join(", ",
-        insertCmd.Parameters.Cast<OracleParameter>()
-            .Select(p => $"{p.ParameterName}:{p.OracleDbType}(Size={p.Size},Prec={p.Precision},Scale={p.Scale})={SafeValuePreview(p.Value, maxPreviewChars)}"));
-
-    throw new MigrationDataBindingException(
-        stage: "DataValidation",
-        schema: schema,
-        objectName: table,
-        rowNumber: rowNumber,
-        batchNumber: batchNumber,
-        batchRowIndex: batchRowIndex,
-        sourceColumn: "<ROW>",
-        targetColumn: "<ROW>",
-        oracleParameterName: "<ROW>",
-        oracleDbType: "<ROW>",
-        size: null,
-        precision: null,
-        scale: null,
-        valueType: "ArgumentException",
-        valuePreview: $"{aex.Message} | Params: {paramDump}",
-        inner: aex);
-}
-catch (OracleException oex)
-{
-    // Provide row-level diagnostics (param names/types/value previews) to speed up remediation.
-    var paramDump = string.Join(", ",
-        insertCmd.Parameters.Cast<OracleParameter>()
-            .Select(p => $"{p.ParameterName}:{p.OracleDbType}={SafeValuePreview(p.Value, maxPreviewChars)}"));
-
-    throw new MigrationDataBindingException(
-        stage: "DataValidation",
-        schema: schema,
-        objectName: table,
-        rowNumber: rowNumber,
-        batchNumber: batchNumber,
-        batchRowIndex: batchRowIndex,
-        sourceColumn: "<ROW>",
-        targetColumn: "<ROW>",
-        oracleParameterName: "<ROW>",
-        oracleDbType: "<ROW>",
-        size: null,
-        precision: null,
-        scale: null,
-        valueType: "OracleException",
-        valuePreview: $"ORA-{oex.Number}: {oex.Message} | Params: {paramDump}",
-        inner: oex);
-}
-            written++;
-
-            if (!validateFullDataset && written >= rowLimit)
-                break;
-        }
-
-        // Rollback always (dry-run)
         try
         {
-            await txn.RollbackAsync(cancellationToken);
+            await using var rdr = await selectCmd.ExecuteReaderAsync(cancellationToken);
+            while (await rdr.ReadAsync(cancellationToken))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                rowNumber++;
+
+                // DataValidation does not commit; keep batch fields deterministic for diagnostics.
+                var batchNumber = 0;
+                var batchRowIndex = rowNumber > int.MaxValue ? int.MaxValue : (int)rowNumber;
+
+                for (var i = 0; i < colNames.Count; i++)
+                {
+                    object? rawValue = rdr.IsDBNull(i) ? null : rdr.GetValue(i);
+
+                    TryAssignOracleParameterValue(
+                        stage: "DataValidation",
+                        schema: schema,
+                        table: table,
+                        rowNumber: rowNumber,
+                        batchNumber: batchNumber,
+                        batchRowIndex: batchRowIndex,
+                        sourceColumn: colNames[i],
+                        targetColumn: colNames[i],
+                        param: insertCmd.Parameters[i],
+                        rawValue: rawValue,
+                        maxPreviewChars: maxPreviewChars);
+                }
+
+                try
+                {
+                    await insertCmd.ExecuteNonQueryAsync(cancellationToken);
+                }
+                catch (ArgumentException aex)
+                {
+                    // ORA-50028 is surfaced by ODP.NET as ArgumentException during pre-bind. Dump param metadata for root-cause.
+                    var paramDump = string.Join(", ",
+                        insertCmd.Parameters.Cast<OracleParameter>()
+                            .Select(p => $"{p.ParameterName}:{p.OracleDbType}(Size={p.Size},Prec={p.Precision},Scale={p.Scale})={SafeValuePreview(p.Value, maxPreviewChars)}"));
+
+                    throw new MigrationDataBindingException(
+                        stage: "DataValidation",
+                        schema: schema,
+                        objectName: table,
+                        rowNumber: rowNumber,
+                        batchNumber: batchNumber,
+                        batchRowIndex: batchRowIndex,
+                        sourceColumn: "<ROW>",
+                        targetColumn: "<ROW>",
+                        oracleParameterName: "<ROW>",
+                        oracleDbType: "<ROW>",
+                        size: null,
+                        precision: null,
+                        scale: null,
+                        valueType: "ArgumentException",
+                        valuePreview: $"{aex.Message} | Params: {paramDump}",
+                        inner: aex);
+                }
+                catch (OracleException oex)
+                {
+                    // Provide row-level diagnostics (param names/types/value previews) to speed up remediation.
+                    var paramDump = string.Join(", ",
+                        insertCmd.Parameters.Cast<OracleParameter>()
+                            .Select(p => $"{p.ParameterName}:{p.OracleDbType}={SafeValuePreview(p.Value, maxPreviewChars)}"));
+
+                    throw new MigrationDataBindingException(
+                        stage: "DataValidation",
+                        schema: schema,
+                        objectName: table,
+                        rowNumber: rowNumber,
+                        batchNumber: batchNumber,
+                        batchRowIndex: batchRowIndex,
+                        sourceColumn: "<ROW>",
+                        targetColumn: "<ROW>",
+                        oracleParameterName: "<ROW>",
+                        oracleDbType: "<ROW>",
+                        size: null,
+                        precision: null,
+                        scale: null,
+                        valueType: "OracleException",
+                        valuePreview: $"ORA-{oex.Number}: {oex.Message} | Params: {paramDump}",
+                        inner: oex);
+                }
+
+                written++;
+
+                if (!validateFullDataset && written >= rowLimit)
+                    break;
+            }
         }
-        catch
+        finally
         {
-            // ignore rollback exceptions (best-effort)
+            // Rollback always (dry-run), even if a row fails mid-stream.
+            try { await txn.RollbackAsync(cancellationToken); } catch { /* best effort */ }
         }
 
         _logger.Info($"[DataValidation] Dry-run inserted {written} row(s) for {schema}.{table} into {schemaPrefix}.{table} (rolled back).");
@@ -719,10 +740,20 @@ if (rawValue is string s1 && s1.Length == 0)
 // Handle common SQL CLR / SqlTypes values returned by SqlDataReader
 // without taking a hard dependency on Microsoft.SqlServer.Types in this project.
 if (rawValue is System.Data.SqlTypes.SqlBinary sb)
-    return sb.Value;
+{
+    var bytes = sb.Value;
+    if ((param.OracleDbType is OracleDbType.Raw or OracleDbType.LongRaw or OracleDbType.Blob) && (bytes == null || bytes.Length == 0))
+        return param.IsNullable ? DBNull.Value : new byte[] { 0x00 };
+    return bytes;
+}
 
 if (rawValue is System.Data.SqlTypes.SqlBytes sby)
-    return sby.Value;
+{
+    var bytes = sby.Value;
+    if ((param.OracleDbType is OracleDbType.Raw or OracleDbType.LongRaw or OracleDbType.Blob) && (bytes == null || bytes.Length == 0))
+        return param.IsNullable ? DBNull.Value : new byte[] { 0x00 };
+    return bytes;
+}
 
 if (rawValue is System.Data.SqlTypes.SqlGuid sg)
     rawValue = sg.Value;
@@ -738,7 +769,9 @@ if (tFull == "Microsoft.SqlServer.Types.SqlHierarchyId")
         var sqlBytes = getBinary?.Invoke(rawValue, null);
         var valProp = sqlBytes?.GetType().GetProperty("Value");
         var bytes = valProp?.GetValue(sqlBytes) as byte[];
-        return bytes ?? Array.Empty<byte>();
+        if (bytes == null || bytes.Length == 0)
+            return param.IsNullable ? DBNull.Value : new byte[] { 0x00 };
+        return bytes;
     }
     return rawValue!.ToString();
 }
@@ -799,6 +832,13 @@ if (tFull == "Microsoft.SqlServer.Types.SqlGeography" || tFull == "Microsoft.Sql
 // Fix: RAW columns may receive string values (hex literals or GUID text). Convert to byte[].
 if (param.OracleDbType is OracleDbType.Raw or OracleDbType.LongRaw)
 {
+    if (rawValue is byte[] b0)
+    {
+        if (b0.Length == 0)
+            return param.IsNullable ? DBNull.Value : new byte[] { 0x00 };
+        return b0;
+    }
+
     if (rawValue is string s2)
     {
         if (Guid.TryParse(s2, out var sg2))

@@ -22,21 +22,151 @@ public sealed partial class MigrationEngine
         var keys = await GetSqlKeyConstraintsAsync(openSql, dbName, sourceSchema, table, cancellationToken);
         var indexes = await GetSqlIndexesAsync(openSql, dbName, sourceSchema, table, cancellationToken);
 
+        // Oracle automatically creates a backing index for PRIMARY KEY / UNIQUE constraints.
+        // If the source also exposes that backing index (or a duplicate index on the same column list),
+        // attempting to create it explicitly can fail with ORA-01408 (such column list already indexed).
+        // To keep the run deterministic and avoid false failures, skip creating any index whose name
+        // matches a PK/UQ constraint name.
+        var keyConstraintNames = new HashSet<string>(keys.Select(k => k.Name), StringComparer.OrdinalIgnoreCase);
+
+        // Some Oracle environments (esp. XE) may fail index/constraint creation for certain SQL Server definitions.
+        // - ORA-02327: index on LOB column
+        // - ORA-01450: maximum key length exceeded (wide composite index)
+        // We treat these as non-fatal warnings so the migration can continue.
+        var oraCols = await GetOracleColumnInfoAsync(openOra, targetSchema, table, cancellationToken);
+
         // Drop-and-recreate pattern for determinism.
         foreach (var k in keys)
         {
             cancellationToken.ThrowIfCancellationRequested();
             await DropOracleConstraintIfExistsAsync(openOra, targetSchema, table, k.Name, cancellationToken);
             var ddl = BuildOracleConstraintDdl(targetSchema, table, k);
-            await ExecuteOracleIgnoreAsync(openOra, ddl, cancellationToken);
+
+            // Skip constraints that would require an index on a LOB column.
+            if (ContainsLobColumn(k.Columns, oraCols, out var lobCol))
+            {
+                _logger.Warn($"[DdlGeneration][WARN] TABLE {sourceSchema}.{table}: Skipping constraint '{k.Name}' because it includes LOB column '{lobCol}'.");
+                continue;
+            }
+
+            if (!await TryExecuteOracleIndexLikeDdlAsync(openOra, ddl, sourceSchema, table, $"constraint '{k.Name}'", cancellationToken))
+                continue;
         }
 
         foreach (var ix in indexes)
         {
             cancellationToken.ThrowIfCancellationRequested();
+
+            if (keyConstraintNames.Contains(ix.Name))
+            {
+                _logger.Warn($"[DdlGeneration][WARN] TABLE {sourceSchema}.{table}: Skipping index '{ix.Name}' because an identically named PK/UQ constraint was created (Oracle will create a backing index automatically).");
+                continue;
+            }
+
             await DropOracleIndexIfExistsAsync(openOra, targetSchema, ix.Name, cancellationToken);
             var ddl = BuildOracleIndexDdl(targetSchema, table, ix);
-            await ExecuteOracleIgnoreAsync(openOra, ddl, cancellationToken);
+
+            if (ContainsLobColumn(ix.KeyColumns, oraCols, out var lobCol))
+            {
+                _logger.Warn($"[DdlGeneration][WARN] TABLE {sourceSchema}.{table}: Skipping index '{ix.Name}' because it includes LOB column '{lobCol}'.");
+                continue;
+            }
+
+            if (!await TryExecuteOracleIndexLikeDdlAsync(openOra, ddl, sourceSchema, table, $"index '{ix.Name}'", cancellationToken))
+                continue;
+        }
+    }
+
+    private sealed record OracleColumnInfo(string DataType, int DataLength);
+
+    private static bool IsLobType(string dataType)
+        => dataType.Equals("BLOB", StringComparison.OrdinalIgnoreCase)
+           || dataType.Equals("CLOB", StringComparison.OrdinalIgnoreCase)
+           || dataType.Equals("NCLOB", StringComparison.OrdinalIgnoreCase)
+           || dataType.Equals("LONG", StringComparison.OrdinalIgnoreCase)
+           || dataType.Equals("LONG RAW", StringComparison.OrdinalIgnoreCase);
+
+    private static bool ContainsLobColumn(IReadOnlyList<string> cols, Dictionary<string, OracleColumnInfo> oraCols, out string lobCol)
+    {
+        foreach (var c in cols)
+        {
+            if (oraCols.TryGetValue(c, out var info) && IsLobType(info.DataType))
+            {
+                lobCol = c;
+                return true;
+            }
+        }
+        lobCol = string.Empty;
+        return false;
+    }
+
+    private static string NormalizeOraObject(string s) => s.Trim().Trim('"').ToUpperInvariant();
+
+    private static async Task<Dictionary<string, OracleColumnInfo>> GetOracleColumnInfoAsync(
+        OracleConnection openOra,
+        string targetSchema,
+        string table,
+        CancellationToken ct)
+    {
+        var dict = new Dictionary<string, OracleColumnInfo>(StringComparer.OrdinalIgnoreCase);
+
+        // Use ALL_TAB_COLUMNS to support cross-schema provisioning.
+        const string sql = @"SELECT COLUMN_NAME, DATA_TYPE, DATA_LENGTH
+FROM ALL_TAB_COLUMNS
+WHERE OWNER = :p_owner AND TABLE_NAME = :p_table";
+
+        await using var cmd = new OracleCommand(sql, openOra);
+        cmd.Parameters.Add(new OracleParameter("p_owner", NormalizeOraObject(targetSchema)));
+        cmd.Parameters.Add(new OracleParameter("p_table", NormalizeOraObject(table)));
+
+        await using var rdr = await cmd.ExecuteReaderAsync(ct);
+        while (await rdr.ReadAsync(ct))
+        {
+            var col = rdr.GetString(0);
+            var dt = rdr.GetString(1);
+            var len = rdr.IsDBNull(2) ? 0 : Convert.ToInt32(rdr.GetValue(2));
+            dict[col] = new OracleColumnInfo(dt, len);
+        }
+
+        return dict;
+    }
+
+    private async Task<bool> TryExecuteOracleIndexLikeDdlAsync(
+        OracleConnection openOra,
+        string ddl,
+        string sourceSchema,
+        string table,
+        string objectLabel,
+        CancellationToken ct)
+    {
+        try
+        {
+            await ExecuteOracleIgnoreAsync(openOra, ddl, ct);
+            return true;
+        }
+        catch (OracleException ex) when (ex.Number == 1450 || ex.Message.Contains("ORA-01450", StringComparison.OrdinalIgnoreCase))
+        {
+            // Wide composite index/constraint: don't fail entire migration.
+            _logger.Warn($"[DdlGeneration][WARN] TABLE {sourceSchema}.{table}: Skipping {objectLabel} due to ORA-01450 (maximum key length exceeded).");
+            return false;
+        }
+        catch (OracleException ex) when (ex.Number == 2327 || ex.Message.Contains("ORA-02327", StringComparison.OrdinalIgnoreCase))
+        {
+            // Index on LOB expression/column.
+            _logger.Warn($"[DdlGeneration][WARN] TABLE {sourceSchema}.{table}: Skipping {objectLabel} due to ORA-02327 (index on LOB/expression not supported).");
+            return false;
+        }
+        catch (OracleException ex) when (ex.Number == 1408 || ex.Message.Contains("ORA-01408", StringComparison.OrdinalIgnoreCase))
+        {
+            // Duplicate index on the same column list (Oracle often creates a backing index for UNIQUE constraints).
+            _logger.Warn($"[DdlGeneration][WARN] TABLE {sourceSchema}.{table}: Skipping {objectLabel} due to ORA-01408 (such column list already indexed).");
+            return false;
+        }
+        catch (OracleException ex)
+        {
+            // Unknown error: preserve fail-fast semantics.
+            _logger.Error($"[DdlGeneration][ERROR] TABLE {sourceSchema}.{table}: Failed to deploy {objectLabel}. {ex.Message}");
+            throw;
         }
     }
 
@@ -68,7 +198,9 @@ ORDER BY kc.name, ic.key_ordinal;";
             var name = rdr.GetString(0);
             var type = rdr.GetString(1); // PK or UQ
             var col = rdr.GetString(2);
-            var ord = rdr.GetInt32(3);
+            // sys.index_columns.key_ordinal is a tinyint in SQL Server.
+            // Some providers surface it as byte, so avoid GetInt32() to prevent InvalidCastException.
+            var ord = Convert.ToInt32(rdr.GetValue(3));
 
             if (!dict.TryGetValue(name, out var v))
             {
@@ -123,7 +255,8 @@ ORDER BY ix.name, ic.key_ordinal;";
             if (string.IsNullOrWhiteSpace(name)) continue;
             var uniq = rdr.GetBoolean(1);
             var col = rdr.GetString(2);
-            var ord = rdr.GetInt32(3);
+            // sys.index_columns.key_ordinal is a tinyint in SQL Server.
+            var ord = Convert.ToInt32(rdr.GetValue(3));
 
             if (!dict.TryGetValue(name, out var v))
             {

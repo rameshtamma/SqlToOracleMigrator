@@ -1,0 +1,90 @@
+<Window x:Class="SqlToOracleMigrator.Desktop.Views.ValidateMigrationWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="clr-namespace:SqlToOracleMigrator.Desktop.ViewModels"
+        Title="Post-Migration Validation" Height="780" Width="1200"
+        WindowStartupLocation="CenterOwner">
+    <Window.DataContext>
+        <vm:ValidateMigrationViewModel />
+    </Window.DataContext>
+
+    <DockPanel Margin="10">
+        <StackPanel DockPanel.Dock="Top" Orientation="Vertical" Margin="0,0,0,10">
+            <TextBlock Text="Post-migration validation compares SQL Server vs Oracle object inventory, keys, validity, and (optionally) row counts." Foreground="#555" />
+
+            <Grid Margin="0,10,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <StackPanel Grid.Row="0" Grid.Column="0" Margin="0,0,10,0">
+                    <TextBlock Text="SQL Connection" FontWeight="SemiBold" />
+                    <ComboBox ItemsSource="{Binding SqlConnections}" SelectedItem="{Binding SelectedSqlConnection}" DisplayMemberPath="Name" />
+                </StackPanel>
+
+                <StackPanel Grid.Row="0" Grid.Column="1" Margin="0,0,10,0">
+                    <TextBlock Text="Source Database" FontWeight="SemiBold" />
+                    <TextBox Text="{Binding SourceDatabase}" />
+                </StackPanel>
+
+                <StackPanel Grid.Row="0" Grid.Column="2">
+                    <TextBlock Text="Oracle Connection (PDB)" FontWeight="SemiBold" />
+                    <ComboBox ItemsSource="{Binding OracleConnections}" SelectedItem="{Binding SelectedOracleConnection}" DisplayMemberPath="Name" />
+                </StackPanel>
+
+                <StackPanel Grid.Row="1" Grid.Column="0" Margin="0,10,10,0">
+                    <TextBlock Text="Schemas (comma-separated)" FontWeight="SemiBold" />
+                    <TextBox Text="{Binding SchemasCsv}" />
+                </StackPanel>
+
+                <StackPanel Grid.Row="1" Grid.Column="1" Margin="0,10,10,0">
+                    <CheckBox IsChecked="{Binding IncludeRowCounts}" Content="Include row counts (slower)" />
+                    <CheckBox IsChecked="{Binding IncludeKeysAndInvalidChecks}" Content="Include keys + invalid object checks" />
+                </StackPanel>
+
+                <StackPanel Grid.Row="1" Grid.Column="2" Margin="0,10,0,0">
+                    <TextBlock Text="Report output folder" FontWeight="SemiBold" />
+                    <TextBox Text="{Binding ReportOutputFolder}" />
+                </StackPanel>
+
+                <StackPanel Grid.Row="0" Grid.RowSpan="2" Grid.Column="3" VerticalAlignment="Bottom" Margin="10,0,0,0">
+                    <Button Padding="14,8" Command="{Binding RunValidationCommand}" Content="Run Validation" />
+                    <Button Padding="14,8" Margin="0,8,0,0" Command="{Binding OpenLastReportCommand}" Content="Open Last Report" />
+                </StackPanel>
+            </Grid>
+
+            <ProgressBar Height="8" Margin="0,10,0,0" Minimum="0" Maximum="100" Value="{Binding ProgressPercent}" />
+            <TextBlock Margin="0,6,0,0" Text="{Binding StatusText}" Foreground="#333" />
+        </StackPanel>
+
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+
+            <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
+                <TextBlock Text="Summary:" FontWeight="SemiBold" Margin="0,0,6,0" />
+                <TextBlock Text="{Binding SummaryText}" />
+            </StackPanel>
+
+            <DataGrid Grid.Row="1" ItemsSource="{Binding Issues}" AutoGenerateColumns="False" CanUserAddRows="False">
+                <DataGrid.Columns>
+                    <DataGridTextColumn Header="Severity" Binding="{Binding Severity}" Width="90" />
+                    <DataGridTextColumn Header="Category" Binding="{Binding Category}" Width="160" />
+                    <DataGridTextColumn Header="Schema" Binding="{Binding Schema}" Width="140" />
+                    <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="240" />
+                    <DataGridTextColumn Header="Type" Binding="{Binding ObjectType}" Width="120" />
+                    <DataGridTextColumn Header="Message" Binding="{Binding Message}" Width="*" />
+                </DataGrid.Columns>
+            </DataGrid>
+        </Grid>
+    </DockPanel>
+</Window>

@@ -26,6 +26,38 @@ public sealed class ConnectionManager : IDisposable
     {
         _protector = protector ?? throw new ArgumentNullException(nameof(protector));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+
+        // ODP.NET pools can survive across app sessions and sometimes cause an initial pool-request timeout
+        // (ORA-50000) on the first Open(). Clearing pools here makes first-connect more reliable.
+        try { OracleConnection.ClearAllPools(); } catch { /* best-effort */ }
+    }
+
+    private static bool IsOraclePoolRequestTimeout(Exception ex)
+    {
+        if (ex is OracleException oe && oe.Number == 50000) return true; // ORA-50000: Connection request timed out
+        return ex.InnerException is OracleException ioe && ioe.Number == 50000;
+    }
+
+    private static async Task<OracleConnection> OpenOracleWithRetryAsync(ConnectionDefinition def, CancellationToken ct)
+    {
+        // Attempt 1: normal pooled connection
+        try
+        {
+            var conn = new OracleConnection(ConnectionStringBuilders.BuildOracle(def));
+            await Task.Run(() => conn.Open(), ct);
+            return conn;
+        }
+        catch (Exception ex) when (IsOraclePoolRequestTimeout(ex))
+        {
+            // Pool request timed out. Clear pools and retry once with pooling disabled.
+            try { OracleConnection.ClearAllPools(); } catch { /* ignore */ }
+
+            var csNoPool = ConnectionStringBuilders.BuildOracle(def);
+            csNoPool = csNoPool.Replace("Pooling=true;", "Pooling=false;", StringComparison.OrdinalIgnoreCase);
+            var conn = new OracleConnection(csNoPool);
+            await Task.Run(() => conn.Open(), ct);
+            return conn;
+        }
     }
 
     public bool IsConnected(ConnectionDefinition def)
@@ -64,7 +96,7 @@ public sealed class ConnectionManager : IDisposable
             }
             else
             {
-                await using var conn = ConnectionStringBuilders.CreateOpenOracleConnection(def);
+                await using var conn = await OpenOracleWithRetryAsync(def, cancellationToken);
                 await using var cmd = new OracleCommand("SELECT 1 FROM dual", conn);
                 _ = await cmd.ExecuteScalarAsync(cancellationToken);
             }
@@ -99,7 +131,7 @@ public sealed class ConnectionManager : IDisposable
             else
             {
                 EnsureCapacityOracle(def.Name);
-                var conn = ConnectionStringBuilders.CreateOpenOracleConnection(def);
+                var conn = await OpenOracleWithRetryAsync(def, cancellationToken);
                 lock (_gate)
                 {
                     _activeOracle[def.Name] = new ActiveConn<OracleConnection> { Definition = def, Connection = conn };

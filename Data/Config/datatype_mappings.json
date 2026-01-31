@@ -29,7 +29,7 @@
   "datetimeoffset": "TIMESTAMP WITH TIME ZONE",
   "rowversion": "RAW(8)",
   "timestamp": "RAW(8)",
-  "hierarchyid": "BLOB",
+  "hierarchyid": "RAW(892)",
   "geography": "BLOB",
   "geometry": "BLOB",
   "sql_variant": "VARCHAR2(4000)",
