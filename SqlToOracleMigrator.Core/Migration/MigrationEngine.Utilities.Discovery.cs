@@ -4,6 +4,16 @@ namespace SqlToOracleMigrator.Core;
 
 public sealed partial class MigrationEngine
 {
+    // Internal schemas created by the migrator in the source SQL database.
+    // Exclude them from discovery so the tool does not migrate its own tracking metadata.
+    private static readonly HashSet<string> _internalSqlSchemas = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "ToolMig"
+    };
+
+    private static bool IsInternalToolSchema(string? schema)
+        => !string.IsNullOrWhiteSpace(schema) && _internalSqlSchemas.Contains(schema.Trim());
+
     private async Task<List<(string Schema, string Name)>> DiscoverSequencesAsync(SqlConnection openSql, string dbName, CancellationToken cancellationToken)
     {
         var db = SqlIdent.Bracket(dbName);
@@ -18,7 +28,9 @@ ORDER BY s.name, seq.name;";
         await using var rdr = await cmd.ExecuteReaderAsync(cancellationToken);
         while (await rdr.ReadAsync(cancellationToken))
         {
-            list.Add((rdr.GetString(0), rdr.GetString(1)));
+            var schema = rdr.GetString(0);
+            if (IsInternalToolSchema(schema)) continue;
+            list.Add((schema, rdr.GetString(1)));
         }
         return list;
     }
@@ -37,7 +49,9 @@ ORDER BY s.name, v.name;";
         await using var rdr = await cmd.ExecuteReaderAsync(cancellationToken);
         while (await rdr.ReadAsync(cancellationToken))
         {
-            list.Add((rdr.GetString(0), rdr.GetString(1)));
+            var schema = rdr.GetString(0);
+            if (IsInternalToolSchema(schema)) continue;
+            list.Add((schema, rdr.GetString(1)));
         }
         return list;
     }
@@ -56,7 +70,9 @@ ORDER BY s.name, p.name;";
         await using var rdr = await cmd.ExecuteReaderAsync(cancellationToken);
         while (await rdr.ReadAsync(cancellationToken))
         {
-            list.Add((rdr.GetString(0), rdr.GetString(1)));
+            var schema = rdr.GetString(0);
+            if (IsInternalToolSchema(schema)) continue;
+            list.Add((schema, rdr.GetString(1)));
         }
         return list;
     }
@@ -76,7 +92,9 @@ ORDER BY s.name, o.name;";
         await using var rdr = await cmd.ExecuteReaderAsync(cancellationToken);
         while (await rdr.ReadAsync(cancellationToken))
         {
-            list.Add((rdr.GetString(0), rdr.GetString(1)));
+            var schema = rdr.GetString(0);
+            if (IsInternalToolSchema(schema)) continue;
+            list.Add((schema, rdr.GetString(1)));
         }
         return list;
     }
@@ -101,7 +119,10 @@ ORDER BY ts.name, tr.name;";
         await using var rdr = await cmd.ExecuteReaderAsync(cancellationToken);
         while (await rdr.ReadAsync(cancellationToken))
         {
-            list.Add((rdr.GetString(0), rdr.GetString(1), rdr.GetString(2), rdr.GetString(3)));
+            var trgSchema = rdr.GetString(0);
+            var parentSchema = rdr.GetString(2);
+            if (IsInternalToolSchema(trgSchema) || IsInternalToolSchema(parentSchema)) continue;
+            list.Add((trgSchema, rdr.GetString(1), parentSchema, rdr.GetString(3)));
         }
         return list;
     }
@@ -119,7 +140,9 @@ ORDER BY s.name, sy.name;";
         await using var rdr = await cmd.ExecuteReaderAsync(cancellationToken);
         while (await rdr.ReadAsync(cancellationToken))
         {
-            list.Add((rdr.GetString(0), rdr.GetString(1), rdr.IsDBNull(2) ? string.Empty : rdr.GetString(2)));
+            var schema = rdr.GetString(0);
+            if (IsInternalToolSchema(schema)) continue;
+            list.Add((schema, rdr.GetString(1), rdr.IsDBNull(2) ? string.Empty : rdr.GetString(2)));
         }
         return list;
     }
@@ -139,7 +162,9 @@ ORDER BY s.name, t.name;";
         await using var rdr = await cmd.ExecuteReaderAsync(cancellationToken);
         while (await rdr.ReadAsync(cancellationToken))
         {
-            list.Add((rdr.GetString(0), rdr.GetString(1), rdr.IsDBNull(2) ? string.Empty : rdr.GetString(2)));
+            var schema = rdr.GetString(0);
+            if (IsInternalToolSchema(schema)) continue;
+            list.Add((schema, rdr.GetString(1), rdr.IsDBNull(2) ? string.Empty : rdr.GetString(2)));
         }
         return list;
     }
@@ -176,6 +201,10 @@ ORDER BY fs.name, fk.name, fkc.constraint_column_id;";
             var t = rdr.GetString(3);
             var rs = rdr.GetString(4);
             var rt = rdr.GetString(5);
+
+            // Skip tool-owned schemas.
+            if (IsInternalToolSchema(fs) || IsInternalToolSchema(ts) || IsInternalToolSchema(rs))
+                continue;
             var col = rdr.GetString(6);
             var rcol = rdr.GetString(7);
             var ord = rdr.GetInt32(8);

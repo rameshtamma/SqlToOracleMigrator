@@ -118,7 +118,9 @@ private async Task<List<(string Schema, string Table)>> DiscoverTablesAsync(SqlC
         await using var rdr = await cmd.ExecuteReaderAsync(cancellationToken);
         while (await rdr.ReadAsync(cancellationToken))
         {
-            list.Add((rdr.GetString(0), rdr.GetString(1)));
+            var schema = rdr.GetString(0);
+            if (IsInternalToolSchema(schema)) continue;
+            list.Add((schema, rdr.GetString(1)));
         }
         return list;
     }
