@@ -12,7 +12,15 @@ public sealed class InventoryDbRowViewModel : NotifyBase
     private int _offset;
     private string _objectsCountLabel = "";
 
-    public ConnectionDefinition? SourceConnection { get; init; } // only for SQL rows (objects come from source)
+    /// <summary>
+    /// Source SQL connection (when Side==Source). Used for drill-down to objects.
+    /// </summary>
+    public ConnectionDefinition? SourceConnection { get; init; }
+
+    /// <summary>
+    /// Target Oracle connection (when Side==Target). Used for drill-down to objects.
+    /// </summary>
+    public ConnectionDefinition? TargetConnection { get; init; }
     public string DatabaseOrService { get; init; } = "";
 
     // Summary columns
@@ -66,7 +74,7 @@ public sealed class InventoryDbRowViewModel : NotifyBase
 
     private async Task LoadInitialAsync()
     {
-        if (SourceConnection is null) return; // Oracle row - no object drilldown for now
+        if (SourceConnection is null && TargetConnection is null) return;
         if (Objects.Count > 0) return;
 
         _offset = 0;
@@ -76,7 +84,7 @@ public sealed class InventoryDbRowViewModel : NotifyBase
 
     private async Task LoadMoreAsync()
     {
-        if (SourceConnection is null) return;
+        if (SourceConnection is null && TargetConnection is null) return;
 
         IsLoadingObjects = true;
         LoadMoreCommand.RaiseCanExecuteChanged();
@@ -87,9 +95,26 @@ public sealed class InventoryDbRowViewModel : NotifyBase
             if (services is null) return;
 
             var fetch = _main.MaxRowsPerExpand;
-            var (items, hasMore) = await services.InventoryService.LoadSqlObjectsAsync(SourceConnection, DatabaseOrService, _offset, fetch, CancellationToken.None);
 
-            foreach (var it in items)
+            IReadOnlyList<InventoryObjectSummary> items;
+            bool hasMore;
+            if (SourceConnection is not null)
+            {
+                (items, hasMore) = await services.InventoryService.LoadSqlObjectsAsync(SourceConnection, DatabaseOrService, _offset, fetch, CancellationToken.None);
+            }
+            else
+            {
+                (items, hasMore) = await services.InventoryService.LoadOracleObjectsAsync(TargetConnection!, _offset, fetch, CancellationToken.None);
+            }
+
+            // Sort/group friendly ordering: type then name
+            var ordered = items
+                .OrderBy(i => i.ObjectType, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(i => i.ObjectName, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(i => i.Schema, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            foreach (var it in ordered)
             {
                 Objects.Add(new InventoryObjectRowViewModel(it));
             }

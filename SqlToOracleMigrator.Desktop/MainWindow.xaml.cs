@@ -21,4 +21,13 @@ public partial class MainWindow : Window
         if (DataContext is not MainViewModel vm) return;
         await vm.OnTreeSelectionChangedAsync(e.NewValue);
     }
+
+    private async void ConnectionsTree_PreviewMouseDoubleClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        if (DataContext is not MainViewModel vm) return;
+        if (sender is not TreeView tree) return;
+
+        // Use the currently selected item so double-click works even if selection doesn't change.
+        await vm.OnTreeItemDoubleClickedAsync(tree.SelectedItem);
+    }
 }

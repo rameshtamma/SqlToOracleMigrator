@@ -77,4 +77,19 @@ public sealed class InventoryService
             ?? throw new InvalidOperationException("SQL Server connection is not connected.");
         return await _sqlMeta.ListObjectsPagedAsync(open, database, offset, fetch, cancellationToken);
     }
+
+    public async Task<(IReadOnlyList<InventoryObjectSummary> items, bool hasMore)> LoadOracleObjectsAsync(
+        ConnectionDefinition oracleConnection,
+        int offset,
+        int fetch,
+        CancellationToken cancellationToken)
+    {
+        if (oracleConnection.Engine != DatabaseEngine.Oracle)
+            throw new InvalidOperationException("Expected Oracle connection.");
+
+        var open = _connMgr.TryGetOpenOracle(oracleConnection.Name)
+            ?? throw new InvalidOperationException("Oracle connection is not connected.");
+
+        return await _oraMeta.ListObjectsPagedAsync(open, offset, fetch, cancellationToken);
+    }
 }

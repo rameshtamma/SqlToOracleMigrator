@@ -80,7 +80,8 @@
                                FontWeight="SemiBold" FontSize="14"
                                Padding="10,10,10,6"/>
                     <TreeView ItemsSource="{Binding ConnectionGroups}" Margin="6"
-                              SelectedItemChanged="ConnectionsTree_SelectedItemChanged">
+                              SelectedItemChanged="ConnectionsTree_SelectedItemChanged"
+                              PreviewMouseDoubleClick="ConnectionsTree_PreviewMouseDoubleClick">
                         <TreeView.Resources>
                             <HierarchicalDataTemplate DataType="{x:Type vm:TreeGroupNodeViewModel}" ItemsSource="{Binding Children}">
                                 <StackPanel Orientation="Horizontal">

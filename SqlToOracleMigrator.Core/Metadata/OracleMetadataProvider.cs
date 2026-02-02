@@ -1,4 +1,5 @@
 using Oracle.ManagedDataAccess.Client;
+using SqlToOracleMigrator.Core.Scoring;
 
 namespace SqlToOracleMigrator.Core;
 
@@ -55,7 +56,137 @@ FROM dual";
         return summary;
     }
 
-    
+    // ----------------------------
+    // Inventory: object drill-down (paged)
+    // ----------------------------
+    public async Task<(IReadOnlyList<InventoryObjectSummary> items, bool hasMore)> ListObjectsPagedAsync(
+        OracleConnection openConnection,
+        int offset,
+        int fetch,
+        CancellationToken cancellationToken)
+    {
+        if (openConnection is null) throw new ArgumentNullException(nameof(openConnection));
+        fetch = Math.Clamp(fetch, 1, 5000);
+        offset = Math.Max(0, offset);
+
+        // Determine the current schema once (do not rely on connection properties; ODP.NET doesn't expose UserId).
+        var schema = await GetCurrentSchemaNameAsync(openConnection, cancellationToken);
+        if (string.IsNullOrWhiteSpace(schema)) schema = "(current)";
+
+        // Fetch +1 to detect hasMore.
+        var effectiveFetch = fetch + 1;
+
+        // Best-effort inventory scoped to the connected user/schema.
+        // We avoid DBA views to work in locked-down environments.
+        const string sql = @"
+SELECT schema_name,
+       object_name,
+       object_type,
+       created_date,
+       last_ddl_time,
+       est_rows,
+       est_size_mb
+FROM (
+  SELECT
+    SYS_CONTEXT('USERENV','CURRENT_SCHEMA') AS schema_name,
+    uo.object_name AS object_name,
+    uo.object_type AS object_type,
+    uo.created     AS created_date,
+    uo.last_ddl_time AS last_ddl_time,
+    /* rows: only meaningful for tables */
+    CASE WHEN uo.object_type = 'TABLE' THEN ut.num_rows ELSE NULL END AS est_rows,
+    /* size: segment bytes (TABLE/INDEX/etc). For non-segment objects this will be NULL */
+    (SELECT ROUND(SUM(s.bytes) / 1024 / 1024, 3)
+       FROM user_segments s
+      WHERE s.segment_name = uo.object_name
+    ) AS est_size_mb,
+    ROW_NUMBER() OVER (ORDER BY uo.object_type, uo.object_name) AS rn
+  FROM user_objects uo
+  LEFT JOIN user_tables ut
+    ON ut.table_name = uo.object_name
+  WHERE uo.object_type IN (
+    'TABLE','VIEW','PROCEDURE','FUNCTION','SEQUENCE','SYNONYM','TRIGGER','INDEX'
+  )
+)
+WHERE rn > :offset AND rn <= :offset + :fetch
+ORDER BY rn";
+
+        var list = new List<InventoryObjectSummary>();
+
+        await using var cmd = new OracleCommand(sql, openConnection);
+        cmd.BindByName = true;
+        cmd.Parameters.Add(new OracleParameter("offset", offset));
+        cmd.Parameters.Add(new OracleParameter("fetch", effectiveFetch));
+
+        await using var rdr = await cmd.ExecuteReaderAsync(cancellationToken);
+        while (await rdr.ReadAsync(cancellationToken))
+        {
+            // schema_name should always come back, but keep a safe fallback.
+            var schemaName = rdr.IsDBNull(0) ? schema : rdr.GetString(0);
+
+            var objName = rdr.IsDBNull(1) ? "" : rdr.GetString(1);
+            var objTypeRaw = rdr.IsDBNull(2) ? "" : rdr.GetString(2);
+            var created = rdr.IsDBNull(3) ? (DateTimeOffset?)null : new DateTimeOffset(rdr.GetDateTime(3));
+            var modified = rdr.IsDBNull(4) ? (DateTimeOffset?)null : new DateTimeOffset(rdr.GetDateTime(4));
+            long? rows = rdr.IsDBNull(5) ? null : Convert.ToInt64(rdr.GetDecimal(5));
+            double? sizeMb = rdr.IsDBNull(6) ? null : Convert.ToDouble(rdr.GetDecimal(6));
+
+            var type = (objTypeRaw ?? string.Empty).Trim().ToUpperInvariant();
+            var typeLabel = type switch
+            {
+                "TABLE" => "Table",
+                "VIEW" => "View",
+                "PROCEDURE" => "Procedure",
+                "FUNCTION" => "Function",
+                "SEQUENCE" => "Sequence",
+                "SYNONYM" => "Synonym",
+                "TRIGGER" => "Trigger",
+                "INDEX" => "Index",
+                _ => type.Length switch
+                {
+                    0 => "Other",
+                    1 => type,
+                    _ => char.ToUpperInvariant(type[0]) + type[1..].ToLowerInvariant()
+                }
+            };
+
+            list.Add(new InventoryObjectSummary
+            {
+                Schema = schemaName,
+                ObjectName = objName,
+                ObjectType = typeLabel,
+                EstimatedRows = rows,
+                EstimatedSizeMb = sizeMb,
+                CreatedDate = created,
+                LastModifiedDate = modified
+            });
+        }
+
+        var hasMore = list.Count > fetch;
+        if (hasMore)
+            list.RemoveAt(list.Count - 1);
+
+        return (list, hasMore);
+    }
+
+    private static async Task<string> GetCurrentSchemaNameAsync(OracleConnection openConnection, CancellationToken cancellationToken)
+    {
+        try
+        {
+            // CURRENT_SCHEMA is the most relevant for metadata; USER is session user.
+            const string sql = "SELECT SYS_CONTEXT('USERENV','CURRENT_SCHEMA') FROM dual";
+            await using var cmd = new OracleCommand(sql, openConnection);
+            var obj = await cmd.ExecuteScalarAsync(cancellationToken);
+            return obj is null or DBNull ? string.Empty : Convert.ToString(obj) ?? string.Empty;
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
+
+        
     private static async Task<string?> GetContainerNameAsync(OracleConnection openConnection, CancellationToken cancellationToken)
     {
         try
@@ -327,4 +458,7 @@ END;";
         await cmd.ExecuteNonQueryAsync(cancellationToken);
     }
 
-}
+    // ----------------------------
+    // Inventory: object drill-down (paged)
+    // ----------------------------
+    }

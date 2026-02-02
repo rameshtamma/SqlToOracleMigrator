@@ -151,6 +151,48 @@ public sealed class MainViewModel : NotifyBase
         }
     }
 
+    /// <summary>
+    /// Double-click behavior: load inventory and expand the most relevant row so object details become visible.
+    /// </summary>
+    public async Task OnTreeItemDoubleClickedAsync(object? selected)
+    {
+        if (_services is null) return;
+
+        switch (selected)
+        {
+            case ConnectionNodeViewModel connNode:
+                // Ensure connected and inventory loaded
+                if (!connNode.IsConnected)
+                    await ConnectAsync(connNode);
+                else
+                    await LoadInventoryForConnectionAsync(connNode);
+
+                InventoryDbRowViewModel? row = null;
+                if (connNode.Definition.Engine == DatabaseEngine.SqlServer)
+                {
+                    var preferred = connNode.Definition.DefaultDatabase;
+                    row = !string.IsNullOrWhiteSpace(preferred)
+                        ? InventoryRows.FirstOrDefault(r => string.Equals(r.DatabaseOrService, preferred, StringComparison.OrdinalIgnoreCase))
+                        : null;
+                }
+
+                row ??= InventoryRows.FirstOrDefault();
+                if (row is not null)
+                    row.IsExpanded = true;
+                break;
+
+            case DatabaseNodeViewModel dbNode:
+                if (!dbNode.ParentConnection.IsConnected)
+                    await ConnectAsync(dbNode.ParentConnection);
+
+                await LoadInventoryForSqlDatabaseAsync(dbNode.ParentConnection, dbNode.DatabaseName);
+                var dbRow = InventoryRows.FirstOrDefault();
+                if (dbRow is not null)
+                    dbRow.IsExpanded = true;
+                break;
+        }
+    }
+
     private async Task CreateTargetPdbAsync()
     {
         if (_services is null) return;
@@ -353,7 +395,7 @@ public sealed class MainViewModel : NotifyBase
                 var summaries = await _services.InventoryService.LoadOracleInventoryAsync(node.Definition, CancellationToken.None);
                 foreach (var s in summaries)
                 {
-                    InventoryRows.Add(ToVm(s, null));
+                    InventoryRows.Add(ToVm(s, node.Definition));
                 }
             }
         }
@@ -389,11 +431,12 @@ public sealed class MainViewModel : NotifyBase
         }
     }
 
-    private InventoryDbRowViewModel ToVm(InventoryDbSummary s, ConnectionDefinition? sourceSqlConnection)
+    private InventoryDbRowViewModel ToVm(InventoryDbSummary s, ConnectionDefinition? connection)
     {
-        return new InventoryDbRowViewModel(this)
+        var vm = new InventoryDbRowViewModel(this)
         {
-            SourceConnection = sourceSqlConnection,
+            SourceConnection = connection is not null && connection.Engine == DatabaseEngine.SqlServer ? connection : null,
+            TargetConnection = connection is not null && connection.Engine == DatabaseEngine.Oracle ? connection : null,
             Side = s.Side,
             Engine = s.Engine,
             DatabaseOrService = s.DatabaseOrService,
@@ -413,11 +456,21 @@ public sealed class MainViewModel : NotifyBase
             LastStatsUpdate = s.LastStatsUpdate,
             HasMoreObjects = true
         };
+
+        // If we have no backing connection (shouldn't happen), disable drill-down.
+        if (vm.SourceConnection is null && vm.TargetConnection is null)
+            vm.HasMoreObjects = false;
+
+        return vm;
     }
 
     private async Task EnsurePasswordLoadedAsync(ConnectionDefinition def)
     {
         if (_services is null) return;
+
+        // If we already have an active connection, do not prompt again.
+        if (_services.ConnectionManager.IsConnected(def))
+            return;
 
         if (def.Engine == DatabaseEngine.SqlServer && def.UseWindowsAuthentication)
             return;

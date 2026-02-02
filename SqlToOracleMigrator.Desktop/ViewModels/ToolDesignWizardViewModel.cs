@@ -432,14 +432,24 @@ public sealed class ToolDesignWizardViewModel : NotifyBase
             }
         }
 
-        var prompt = new PasswordPromptWindow(def.Name) { Owner = Application.Current.MainWindow };
-        if (prompt.ShowDialog() == true)
-        {
-            def.RuntimePassword = prompt.Password;
-        }
-        else
-        {
+        var allowEditUser = def.Engine == DatabaseEngine.Oracle || (def.Engine == DatabaseEngine.SqlServer && !def.UseWindowsAuthentication);
+        var prompt = new PasswordPromptWindow(def.Name, def.Username ?? string.Empty, allowEditUser) { Owner = Application.Current.MainWindow };
+        if (prompt.ShowDialog() != true)
             throw new InvalidOperationException("Password is required to start migration.");
+
+        var prevUser = def.Username ?? string.Empty;
+        if (!string.IsNullOrWhiteSpace(prompt.UserId) && !string.Equals(prevUser, prompt.UserId, StringComparison.Ordinal))
+        {
+            def.Username = prompt.UserId;
+            _services.ConnectionStore.Save(def);
+        }
+
+        def.RuntimePassword = prompt.Password;
+
+        if (def.SavePassword)
+        {
+            def.EncryptedPassword = _services.Protector.ProtectToBase64(def.RuntimePassword);
+            _services.ConnectionStore.Save(def);
         }
     }
 

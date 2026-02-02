@@ -77,3 +77,35 @@ Data/
 - Migration engine currently migrates **tables** (DDL + row copy). Other object types (views/procs/functions/etc.) are not converted yet.
 - Oracle schema creation is not performed; the schema/user must already exist.
 - Data copy is implemented as a straightforward row-by-row insert (batched commits). For very large databases you will likely enhance batching/array binding.
+
+## Architecture and design patterns
+
+This solution intentionally follows a **layered architecture** with **MVVM** in the WPF app:
+
+- **Desktop (WPF) – MVVM**
+  - *ViewModels* (e.g., `MainViewModel`, `ValidateMigrationViewModel`) expose state + async commands.
+  - *Views* bind to ViewModels (no direct DB access in UI).
+  - *AsyncRelayCommand* keeps UI responsive during I/O.
+
+- **Core – services and providers**
+  - `ConnectionManager` owns lifetime + caching (LRU eviction) for open SQL/Oracle connections.
+  - `SqlServerMetadataProvider` / `OracleMetadataProvider` encapsulate metadata queries.
+  - `InventoryService` composes providers to produce **Combined Inventory** summaries and paged object lists.
+  - `MigrationEngine` orchestrates the end-to-end migration workflow.
+
+### Combined Inventory (read-only)
+
+- The top grid shows per-database (SQL) / per-service (Oracle) summary metrics.
+- Expanding a row loads *paged* object details (virtualized DataGrid).
+- Double-clicking a connection in the left tree will load inventory and expand the most relevant row so object details become visible.
+
+### Post-Migration Validation
+
+- Source DB list is loaded from the selected SQL connection (`sys.databases`).
+- Schemas are loaded from the selected source database (`sys.schemas`) and are **selected by default**.
+- Reports are written to the configured output folder and **Open Last Report** launches the latest JSON report via the default viewer.
+
+### Key implementation notes
+
+- **Credential prompts are skipped** when an active connection already exists.
+- **Metadata access is best-effort** and uses non-DBA views where possible to work in restricted environments.
