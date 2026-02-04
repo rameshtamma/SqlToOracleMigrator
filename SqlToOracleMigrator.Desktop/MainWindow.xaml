@@ -141,7 +141,9 @@
                               VirtualizingPanel.IsVirtualizing="True"
                               VirtualizingPanel.VirtualizationMode="Recycling"
                               RowDetailsVisibilityMode="Visible"
-                              SelectionMode="Single">
+                              SelectionMode="Single"
+                              ScrollViewer.CanContentScroll="True"
+                              ScrollViewer.IsDeferredScrollingEnabled="True">
                         <DataGrid.RowStyle>
                             <Style TargetType="DataGridRow">
                                 <Setter Property="DetailsVisibility" Value="Collapsed"/>
@@ -174,6 +176,8 @@
                                                   EnableColumnVirtualization="True"
                                                   VirtualizingPanel.IsVirtualizing="True"
                                                   VirtualizingPanel.VirtualizationMode="Recycling"
+                                                  ScrollViewer.CanContentScroll="True"
+                                                  ScrollViewer.IsDeferredScrollingEnabled="True"
                                                   MaxHeight="360">
                                             <DataGrid.Columns>
                                                 <DataGridTemplateColumn Header="" Width="40">

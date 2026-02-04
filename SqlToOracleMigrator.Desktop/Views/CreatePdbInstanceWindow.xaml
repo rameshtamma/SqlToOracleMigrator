@@ -1,10 +1,16 @@
 <Window x:Class="SqlToOracleMigrator.Desktop.Views.CreatePdbInstanceWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Create Target PDB" Height="450" Width="560"
-        WindowStartupLocation="CenterOwner" ResizeMode="NoResize">
+        Title="Create Target PDB" Height="520" Width="560"
+        WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
+        Loaded="Window_Loaded" Closing="Window_Closing">
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+    </Window.Resources>
+
     <Grid Margin="14">
         <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
@@ -41,14 +47,25 @@
                        Text="PDB create/drop requires SYSDBA. You can override the saved username here (e.g., SYS)."/>
         </StackPanel>
 
-        <StackPanel Grid.Row="3" Margin="0,12,0,0">
+        <StackPanel Grid.Row="3" Margin="0,10,0,0">
+            <TextBlock Text="Source SQL Database (active connection)"/>
+            <ComboBox ItemsSource="{Binding SqlDatabaseNames}"
+                      SelectedItem="{Binding SelectedSqlDatabaseName}"
+                      Height="28"/>
+            <TextBlock Margin="0,4,0,0" Foreground="#666" FontSize="12"
+                       Text="{Binding SqlDatabaseStatus}" TextWrapping="Wrap"/>
+            <ProgressBar Height="6" Margin="0,6,0,0" IsIndeterminate="True"
+                         Visibility="{Binding IsLoadingSqlDatabases, Converter={StaticResource BoolToVis}}"/>
+        </StackPanel>
+
+        <StackPanel Grid.Row="4" Margin="0,12,0,0">
             <TextBlock Text="Target PDB / Connection Name"/>
             <TextBox Text="{Binding DesiredPdbName}" Height="28"/>
             <TextBlock Margin="0,4,0,0" Foreground="#666" FontSize="12"
-                       Text="Defaults to the last selected SQL database. You can override."/>
+                       Text="Defaults to the selected SQL database name (sanitized). You can override."/>
         </StackPanel>
 
-        <StackPanel Grid.Row="4" Margin="0,10,0,0" Orientation="Vertical">
+        <StackPanel Grid.Row="5" Margin="0,10,0,0" Orientation="Vertical">
             <CheckBox Content="Override (drop and recreate) if the PDB already exists"
                       IsChecked="{Binding OverrideIfExists}"/>
             <TextBlock Margin="24,2,0,0" Foreground="#666" FontSize="12"
@@ -57,7 +74,7 @@
                        Text="If unchecked and the name exists, the tool will auto-append _V1/_V2."/>
         </StackPanel>
 
-        <Border Grid.Row="5" Margin="0,12,0,0" Padding="10" BorderBrush="#D0D0D0" BorderThickness="1" CornerRadius="6">
+        <Border Grid.Row="6" Margin="0,12,0,0" Padding="10" BorderBrush="#D0D0D0" BorderThickness="1" CornerRadius="6">
             <StackPanel>
                 <TextBlock Text="Result" FontWeight="SemiBold"/>
                 <TextBlock Margin="0,6,0,0" Text="{Binding Status}" TextWrapping="Wrap"/>
@@ -65,7 +82,7 @@
             </StackPanel>
         </Border>
 
-        <StackPanel Grid.Row="6" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+        <StackPanel Grid.Row="7" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
             <Button Width="110" Height="32" Margin="0,0,10,0" Content="Cancel" IsCancel="True"/>
             <Button Width="150" Height="32" Content="Create" Command="{Binding CreateCommand}"/>
         </StackPanel>

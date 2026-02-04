@@ -129,12 +129,19 @@ public sealed class ValidateMigrationViewModel : NotifyBase
         // Default DB name from SQL connection if present.
         SourceDatabase = SelectedSqlConnection?.DefaultDatabase ?? "";
 
+        // NOTE: This view-model is constructed by XAML, so we MUST raise property change notifications
+        // when replacing ICommand properties; otherwise WPF keeps the initial placeholder commands.
         RunValidationCommand = new AsyncRelayCommand(RunValidationAsync);
         OpenLastReportCommand = new RelayCommand(OpenLastReport);
-
         RefreshDatabasesCommand = new AsyncRelayCommand(RefreshDatabasesAsync);
         SelectAllSchemasCommand = new RelayCommand(() => SetAllSchemas(true));
         SelectNoneSchemasCommand = new RelayCommand(() => SetAllSchemas(false));
+
+        Raise(nameof(RunValidationCommand));
+        Raise(nameof(OpenLastReportCommand));
+        Raise(nameof(RefreshDatabasesCommand));
+        Raise(nameof(SelectAllSchemasCommand));
+        Raise(nameof(SelectNoneSchemasCommand));
 
         // Auto-populate DBs + schemas on load.
         _ = RefreshDatabasesAsync();
@@ -271,12 +278,16 @@ public sealed class ValidateMigrationViewModel : NotifyBase
             }
         }
 
-        // Prompt the user
-        var win = new PasswordPromptWindow(def.Name) { Owner = Application.Current?.MainWindow };
+        // Prompt the user (display existing username; allow editing for Oracle and SQL auth)
+        var allowEditUser = def.Engine == DatabaseEngine.Oracle || (def.Engine == DatabaseEngine.SqlServer && !def.UseWindowsAuthentication);
+        var win = new PasswordPromptWindow(def.Name, def.Username ?? string.Empty, allowEditUser) { Owner = Application.Current?.MainWindow };
         if (win.ShowDialog() != true)
             throw new InvalidOperationException("Password is required.");
 
         def.RuntimePassword = win.Password;
+
+        if (allowEditUser && !string.IsNullOrWhiteSpace(win.UserId))
+            def.Username = win.UserId.Trim();
 
         // Persist if the user configured SavePassword (behavior consistent with connection wizard)
         if (def.SavePassword)
@@ -372,10 +383,10 @@ public sealed class ValidateMigrationViewModel : NotifyBase
                 throw new InvalidOperationException("Failed to obtain an open SQL connection.");
 
             var dbBracketed = SqlToOracleMigrator.Core.SqlIdent.Bracket(db);
-            var sql = $@"SELECT name
-FROM {dbBracketed}.sys.schemas
-WHERE principal_id < 16384
-ORDER BY name";
+            var sql = _services.QueryStore.Format("ListSqlSchemasFiltered", new Dictionary<string, string>
+            {
+                ["db"] = dbBracketed
+            });
 
             var list = new List<string>();
             await using (var cmd = new SqlCommand(sql, openSql))

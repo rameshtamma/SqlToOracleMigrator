@@ -491,11 +491,21 @@ public sealed class MainViewModel : NotifyBase
             }
         }
 
-        var prompt = new PasswordPromptWindow(def.Name);
+        // Show the current username in the prompt so the user can confirm which credentials are in use.
+        // Allow editing for Oracle connections (common SYS/SYSDBA scenarios) and for SQL auth (non-Windows auth).
+        var allowEditUser = def.Engine == DatabaseEngine.Oracle || (def.Engine == DatabaseEngine.SqlServer && !def.UseWindowsAuthentication);
+        var prompt = new PasswordPromptWindow(def.Name, def.Username ?? string.Empty, allowEditUser);
         prompt.Owner = Application.Current.MainWindow;
         if (prompt.ShowDialog() == true)
         {
             def.RuntimePassword = prompt.Password;
+
+            // Persist updated username if the prompt allowed edits and the user changed it.
+            if (allowEditUser && !string.IsNullOrWhiteSpace(prompt.UserId))
+            {
+                def.Username = prompt.UserId.Trim();
+                _services.ConnectionStore.Save(def);
+            }
         }
         else
         {

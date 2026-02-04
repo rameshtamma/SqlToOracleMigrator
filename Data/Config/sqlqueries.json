@@ -16,5 +16,6 @@
   "SqlSelectTableAll": "DECLARE @sql nvarchar(max) =\n  N'SELECT * FROM ' + QUOTENAME(@SchemaName) + N'.' + QUOTENAME(@TableName) + N';';\nEXEC sp_executesql @sql;",
   "SqlTableRowCount": "SELECT SUM(p.rows) FROM {{db}}.sys.tables t JOIN {{db}}.sys.schemas s ON t.schema_id=s.schema_id JOIN {{db}}.sys.partitions p ON p.object_id=t.object_id AND p.index_id IN (0,1) WHERE s.name=@SchemaName AND t.name=@TableName;",
   "ListSqlSchemas": "SELECT name FROM {{db}}.sys.schemas ORDER BY name;",
+  "ListSqlSchemasFiltered": "SELECT name FROM {{db}}.sys.schemas WHERE principal_id < 16384 ORDER BY name;",
   "SqlSelectTableTopN": "DECLARE @sql nvarchar(max) =\n  N'SELECT TOP (' + CAST(@TopN AS nvarchar(20)) + N') * FROM ' + QUOTENAME(@SchemaName) + N'.' + QUOTENAME(@TableName) + N';';\nEXEC sp_executesql @sql;"
 }

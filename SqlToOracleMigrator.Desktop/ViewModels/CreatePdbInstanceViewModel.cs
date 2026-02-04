@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -25,12 +26,23 @@ public sealed class CreatePdbInstanceViewModel : NotifyBase
     private string _adminUsername = "";
     private bool _connectAsSysDba = true;
 
+
     private string _desiredPdbName = "";
+    private string _activeSqlConnectionName = "";
+    private string _selectedSqlDatabaseName = "";
+    private bool _isLoadingSqlDatabases;
+    private string _sqlDatabaseStatus = "";
+    private string _lastAutoPdbName = "";
     private bool _overrideIfExists = true;
     private string _status = "";
     private string _error = "";
 
     public ObservableCollection<string> OracleAdminConnectionNames { get; } = new();
+
+    /// <summary>
+    /// Databases discovered from the currently connected SQL Server connection.
+    /// </summary>
+    public ObservableCollection<string> SqlDatabaseNames { get; } = new();
 
     public string SelectedOracleAdminConnectionName
     {
@@ -70,6 +82,42 @@ public sealed class CreatePdbInstanceViewModel : NotifyBase
         set => Set(ref _desiredPdbName, value);
     }
 
+    public string ActiveSqlConnectionName
+    {
+        get => _activeSqlConnectionName;
+        private set => Set(ref _activeSqlConnectionName, value);
+    }
+
+    public string SelectedSqlDatabaseName
+    {
+        get => _selectedSqlDatabaseName;
+        set
+        {
+            if (Set(ref _selectedSqlDatabaseName, value))
+            {
+                // Keep DesiredPdbName in sync unless the user already typed a custom value.
+                if (string.IsNullOrWhiteSpace(DesiredPdbName) || string.Equals(DesiredPdbName, _lastAutoPdbName, StringComparison.OrdinalIgnoreCase))
+                {
+                    var suggested = SuggestPdbNameFromSqlDb(value);
+                    _lastAutoPdbName = suggested;
+                    DesiredPdbName = suggested;
+                }
+            }
+        }
+    }
+
+    public bool IsLoadingSqlDatabases
+    {
+        get => _isLoadingSqlDatabases;
+        private set => Set(ref _isLoadingSqlDatabases, value);
+    }
+
+    public string SqlDatabaseStatus
+    {
+        get => _sqlDatabaseStatus;
+        private set => Set(ref _sqlDatabaseStatus, value);
+    }
+
     public bool OverrideIfExists
     {
         get => _overrideIfExists;
@@ -88,6 +136,7 @@ public sealed class CreatePdbInstanceViewModel : NotifyBase
     {
         _services = services ?? throw new ArgumentNullException(nameof(services));
         DesiredPdbName = string.IsNullOrWhiteSpace(defaultPdbName) ? "AdventureWorks2025" : defaultPdbName;
+        _lastAutoPdbName = DesiredPdbName;
 
         // Prefer connected Oracle definitions (must be GREEN).
         var connected = _services.ConnectionManager.GetConnected(DatabaseEngine.Oracle)
@@ -100,9 +149,90 @@ public sealed class CreatePdbInstanceViewModel : NotifyBase
         SelectedOracleAdminConnectionName = OracleAdminConnectionNames.FirstOrDefault() ?? "";
 
         CreateCommand = new AsyncRelayCommand(CreateAsync);
-        Status = "Select an Oracle root connection, set SYS/SYSDBA credentials, and choose a PDB name.";
+        Status = "Select an Oracle root connection, pick a SQL database, set SYS/SYSDBA credentials, and choose a PDB name.";
 
         LoadAdminDefaultsFromSelectedConnection();
+    }
+
+    /// <summary>
+    /// Load SQL databases from the first connected SQL Server connection.
+    /// Invoked by the Create Target PDB window on load.
+    /// </summary>
+    public async Task LoadSqlDatabasesAsync(CancellationToken ct)
+    {
+        IsLoadingSqlDatabases = true;
+        SqlDatabaseStatus = "Loading SQL databases...";
+
+        try
+        {
+            SqlDatabaseNames.Clear();
+            ActiveSqlConnectionName = "";
+
+            var sqlConn = _services.ConnectionManager.GetConnected(DatabaseEngine.SqlServer)
+                .Where(d => d.LastTestStatus == ConnectionTestStatus.Green)
+                .OrderBy(d => d.Name)
+                .FirstOrDefault();
+
+            if (sqlConn is null)
+            {
+                SqlDatabaseStatus = "No active SQL Server connection found. Connect to SQL Server first.";
+                return;
+            }
+
+            ActiveSqlConnectionName = sqlConn.Name;
+            var openSql = _services.ConnectionManager.TryGetOpenSql(sqlConn.Name);
+            if (openSql is null)
+            {
+                SqlDatabaseStatus = "SQL Server connection is not connected. Connect to SQL Server first.";
+                return;
+            }
+
+            var dbs = await _services.SqlMetadata.ListDatabasesAsync(openSql, ct).ConfigureAwait(false);
+            var filtered = dbs
+                .Where(d => !string.IsNullOrWhiteSpace(d))
+                .Where(d => !d.Equals("master", StringComparison.OrdinalIgnoreCase)
+                            && !d.Equals("model", StringComparison.OrdinalIgnoreCase)
+                            && !d.Equals("msdb", StringComparison.OrdinalIgnoreCase)
+                            && !d.Equals("tempdb", StringComparison.OrdinalIgnoreCase))
+                .OrderBy(d => d, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            await Application.Current.Dispatcher.InvokeAsync(() =>
+            {
+                foreach (var d in filtered)
+                    SqlDatabaseNames.Add(d);
+
+                SelectedSqlDatabaseName = SqlDatabaseNames.FirstOrDefault() ?? "";
+                SqlDatabaseStatus = filtered.Count > 0
+                    ? $"Loaded {filtered.Count:N0} databases from '{ActiveSqlConnectionName}'."
+                    : $"No databases found on '{ActiveSqlConnectionName}'.";
+            });
+        }
+        catch (OperationCanceledException)
+        {
+            SqlDatabaseStatus = "Loading cancelled.";
+        }
+        catch (Exception ex)
+        {
+            SqlDatabaseStatus = $"Failed to load SQL databases: {ex.Message}";
+        }
+        finally
+        {
+            IsLoadingSqlDatabases = false;
+        }
+    }
+
+    private static string SuggestPdbNameFromSqlDb(string? sqlDb)
+    {
+        if (string.IsNullOrWhiteSpace(sqlDb)) return "";
+
+        var raw = sqlDb.Trim().ToUpperInvariant();
+        var cleaned = Regex.Replace(raw, @"[^A-Z0-9_]", "_");
+        if (!Regex.IsMatch(cleaned, @"^[A-Z]"))
+            cleaned = "P_" + cleaned;
+        if (cleaned.Length > 30)
+            cleaned = cleaned.Substring(0, 30);
+        return cleaned;
     }
 
     private void LoadAdminDefaultsFromSelectedConnection()

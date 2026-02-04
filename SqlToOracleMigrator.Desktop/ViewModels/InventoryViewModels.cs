@@ -1,4 +1,10 @@
 using System.Collections.ObjectModel;
+using System;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Windows;
+using System.Windows.Threading;
 using SqlToOracleMigrator.Core;
 using SqlToOracleMigrator.Desktop.Services;
 
@@ -12,6 +18,8 @@ public sealed class InventoryDbRowViewModel : NotifyBase
     private int _offset;
     private string _objectsCountLabel = "";
 
+    private CancellationTokenSource? _loadCts;
+
     /// <summary>
     /// Source SQL connection (when Side==Source). Used for drill-down to objects.
     /// </summary>
@@ -21,6 +29,7 @@ public sealed class InventoryDbRowViewModel : NotifyBase
     /// Target Oracle connection (when Side==Target). Used for drill-down to objects.
     /// </summary>
     public ConnectionDefinition? TargetConnection { get; init; }
+
     public string DatabaseOrService { get; init; } = "";
 
     // Summary columns
@@ -49,18 +58,34 @@ public sealed class InventoryDbRowViewModel : NotifyBase
         get => _isExpanded;
         set
         {
-            if (Set(ref _isExpanded, value) && value)
+            if (Set(ref _isExpanded, value))
             {
-                // lazy load objects
-                _ = LoadInitialAsync();
+                if (value)
+                {
+                    // lazy load objects (non-blocking)
+                    _ = LoadInitialAsync();
+                }
+                else
+                {
+                    // cancel in-flight loads when user collapses
+                    try { _loadCts?.Cancel(); } catch { }
+                }
             }
         }
     }
 
-    public bool IsLoadingObjects { get => _isLoadingObjects; set => Set(ref _isLoadingObjects, value); }
-    public bool HasMoreObjects { get => _hasMoreObjects; set => Set(ref _hasMoreObjects, value); }
+    public bool IsLoadingObjects { get => _isLoadingObjects; private set => Set(ref _isLoadingObjects, value); }
 
-    public string ObjectsCountLabel { get => _objectsCountLabel; set => Set(ref _objectsCountLabel, value); }
+    /// <summary>
+    /// Indicates whether the server-side inventory query has more objects beyond what is currently loaded.
+    /// 
+    /// NOTE: This is intentionally <c>internal set</c> because other view models (e.g., MainViewModel)
+    /// may need to update this flag when refreshing rows, while still preventing external callers
+    /// (outside the Desktop assembly) from mutating it.
+    /// </summary>
+    public bool HasMoreObjects { get => _hasMoreObjects; internal set => Set(ref _hasMoreObjects, value); }
+
+    public string ObjectsCountLabel { get => _objectsCountLabel; private set => Set(ref _objectsCountLabel, value); }
 
     public AsyncRelayCommand LoadMoreCommand { get; }
 
@@ -69,25 +94,42 @@ public sealed class InventoryDbRowViewModel : NotifyBase
     public InventoryDbRowViewModel(MainViewModel main)
     {
         _main = main;
-        LoadMoreCommand = new AsyncRelayCommand(LoadMoreAsync, () => !IsLoadingObjects && HasMoreObjects);
+        LoadMoreCommand = new AsyncRelayCommand(() => LoadMoreAsync(ensureReset: false), () => !IsLoadingObjects && HasMoreObjects);
     }
 
     private async Task LoadInitialAsync()
     {
         if (SourceConnection is null && TargetConnection is null) return;
-        if (Objects.Count > 0) return;
+        if (IsLoadingObjects) return;
 
         _offset = 0;
-        Objects.Clear();
-        await LoadMoreAsync();
+
+        // cancel any prior load and start a fresh CTS
+        try { _loadCts?.Cancel(); } catch { }
+        try { _loadCts?.Dispose(); } catch { }
+        _loadCts = new CancellationTokenSource();
+
+        var dispatcher = Application.Current?.Dispatcher ?? Dispatcher.CurrentDispatcher;
+        await dispatcher.InvokeAsync(() => Objects.Clear(), DispatcherPriority.Background);
+
+        await LoadMoreAsync(ensureReset: true);
     }
 
-    private async Task LoadMoreAsync()
+    private async Task LoadMoreAsync(bool ensureReset)
     {
         if (SourceConnection is null && TargetConnection is null) return;
+        if (IsLoadingObjects) return;
 
-        IsLoadingObjects = true;
-        LoadMoreCommand.RaiseCanExecuteChanged();
+        _loadCts ??= new CancellationTokenSource();
+        var ct = _loadCts.Token;
+
+        var dispatcher = Application.Current?.Dispatcher ?? Dispatcher.CurrentDispatcher;
+
+        await dispatcher.InvokeAsync(() =>
+        {
+            IsLoadingObjects = true;
+            LoadMoreCommand.RaiseCanExecuteChanged();
+        }, DispatcherPriority.Background);
 
         try
         {
@@ -100,38 +142,73 @@ public sealed class InventoryDbRowViewModel : NotifyBase
             bool hasMore;
             if (SourceConnection is not null)
             {
-                (items, hasMore) = await services.InventoryService.LoadSqlObjectsAsync(SourceConnection, DatabaseOrService, _offset, fetch, CancellationToken.None);
+                (items, hasMore) = await services.InventoryService
+                    .LoadSqlObjectsAsync(SourceConnection, DatabaseOrService, _offset, fetch, ct)
+                    .ConfigureAwait(false);
             }
             else
             {
-                (items, hasMore) = await services.InventoryService.LoadOracleObjectsAsync(TargetConnection!, _offset, fetch, CancellationToken.None);
+                (items, hasMore) = await services.InventoryService
+                    .LoadOracleObjectsAsync(TargetConnection!, _offset, fetch, ct)
+                    .ConfigureAwait(false);
             }
 
-            // Sort/group friendly ordering: type then name
-            var ordered = items
+            ct.ThrowIfCancellationRequested();
+
+            // Sort/group friendly ordering: type then name then schema
+            var viewModels = items
                 .OrderBy(i => i.ObjectType, StringComparer.OrdinalIgnoreCase)
                 .ThenBy(i => i.ObjectName, StringComparer.OrdinalIgnoreCase)
                 .ThenBy(i => i.Schema, StringComparer.OrdinalIgnoreCase)
+                .Select(i => new InventoryObjectRowViewModel(i))
                 .ToList();
 
-            foreach (var it in ordered)
+            // Batch UI updates to keep scrolling responsive.
+            const int batchSize = 250;
+            for (var i = 0; i < viewModels.Count; i += batchSize)
             {
-                Objects.Add(new InventoryObjectRowViewModel(it));
+                ct.ThrowIfCancellationRequested();
+                var chunk = viewModels.Skip(i).Take(batchSize).ToList();
+
+                await dispatcher.InvokeAsync(() =>
+                {
+                    foreach (var vm in chunk)
+                        Objects.Add(vm);
+                }, DispatcherPriority.Background);
+
+                // Let UI breathe between batches
+                await Task.Yield();
             }
 
             _offset += items.Count;
-            HasMoreObjects = hasMore;
-            ObjectsCountLabel = $"Loaded {Objects.Count:N0} objects";
+
+            await dispatcher.InvokeAsync(() =>
+            {
+                HasMoreObjects = hasMore;
+                ObjectsCountLabel = $"Loaded {Objects.Count:N0} objects";
+            }, DispatcherPriority.Background);
+        }
+        catch (OperationCanceledException)
+        {
+            // user collapsed row or navigation changed
+            await dispatcher.InvokeAsync(() =>
+            {
+                HasMoreObjects = false;
+                ObjectsCountLabel = $"Loaded {Objects.Count:N0} objects (cancelled)";
+            }, DispatcherPriority.Background);
         }
         catch (Exception ex)
         {
             _main.AppendLog($"[Inventory] Failed to load objects for {DatabaseOrService}: {ex.Message}");
-            HasMoreObjects = false;
+            await dispatcher.InvokeAsync(() => HasMoreObjects = false, DispatcherPriority.Background);
         }
         finally
         {
-            IsLoadingObjects = false;
-            LoadMoreCommand.RaiseCanExecuteChanged();
+            await dispatcher.InvokeAsync(() =>
+            {
+                IsLoadingObjects = false;
+                LoadMoreCommand.RaiseCanExecuteChanged();
+            }, DispatcherPriority.Background);
         }
     }
 }
