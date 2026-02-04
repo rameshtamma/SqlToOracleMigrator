@@ -50,7 +50,33 @@ public sealed partial class MigrationEngine
 
             try
             {
-                // 1) Tables (with PK/UQ/Indexes)
+                if (ctx.Request.CreateDependentObjects)
+                {
+                    // 1) Types (UDT) - some tables may depend on UDTs
+                    foreach (var t in ctx.UserDefinedTypes)
+                    {
+                        var schema = t.Schema;
+                        var name = t.Name;
+                        var baseType = t.UnderlyingType;
+                        await RunOneAsync(schema, name, "TYPE", async () =>
+                            await ctx.Engine.DeployUserDefinedTypeAsync(ctx.OpenSql, ctx.OpenOra, ctx.Request.SourceDatabase, schema, name, baseType, ctx.GetTargetSchema(schema), ctx.Request.CreateDependentObjectStubs, ctx.RunDir, ct));
+                    }
+
+                    // 2) Sequences - tables may use them in DEFAULT expressions
+                    foreach (var s in ctx.Sequences)
+                    {
+                        var schema = s.Schema;
+                        var name = s.Name;
+                        await RunOneAsync(schema, name, "SEQUENCE", async () =>
+                            await ctx.Engine.DeploySequenceAsync(ctx.OpenSql, ctx.OpenOra, ctx.Request.SourceDatabase, schema, name, ctx.GetTargetSchema(schema), ct));
+                    }
+
+                    // After deploying sequences, grant SELECT on cross-schema sequences to all other schemas.
+                    // This is required for DEFAULT <schema>.<seq>.NEXTVAL and for cross-schema references in code.
+                    await ctx.Engine.GrantSequenceUsageAcrossSchemasAsync(ctx.OpenOra, ctx, ct);
+                }
+
+                // Tables (with PK/UQ/Indexes) - run after sequences so DEFAULT ...NEXTVAL parses/executes cleanly.
                 foreach (var t in ctx.Tables)
                 {
                     var schema = t.Schema;
@@ -61,26 +87,7 @@ public sealed partial class MigrationEngine
 
                 if (ctx.Request.CreateDependentObjects)
                 {
-                    // 2) Types (UDT)
-                    foreach (var t in ctx.UserDefinedTypes)
-                    {
-                        var schema = t.Schema;
-                        var name = t.Name;
-                        var baseType = t.UnderlyingType;
-                        await RunOneAsync(schema, name, "TYPE", async () =>
-                            await ctx.Engine.DeployUserDefinedTypeAsync(ctx.OpenSql, ctx.OpenOra, ctx.Request.SourceDatabase, schema, name, baseType, ctx.GetTargetSchema(schema), ctx.Request.CreateDependentObjectStubs, ctx.RunDir, ct));
-                    }
-
-                    // 3) Sequences
-                    foreach (var s in ctx.Sequences)
-                    {
-                        var schema = s.Schema;
-                        var name = s.Name;
-                        await RunOneAsync(schema, name, "SEQUENCE", async () =>
-                            await ctx.Engine.DeploySequenceAsync(ctx.OpenSql, ctx.OpenOra, ctx.Request.SourceDatabase, schema, name, ctx.GetTargetSchema(schema), ct));
-                    }
-
-                    // 4) Views
+                    // Views
                     foreach (var v in ctx.Views)
                     {
                         var schema = v.Schema;
@@ -89,7 +96,7 @@ public sealed partial class MigrationEngine
                             await ctx.Engine.DeployViewAsync(ctx.OpenSql, ctx.OpenOra, ctx.Request.SourceDatabase, schema, name, ctx.GetTargetSchema(schema), ctx.Request.CreateDependentObjectStubs, ctx.RunDir, ct));
                     }
 
-                    // 5) Procedures
+                    // Procedures
                     foreach (var p in ctx.Procedures)
                     {
                         var schema = p.Schema;
@@ -98,7 +105,7 @@ public sealed partial class MigrationEngine
                             await ctx.Engine.DeployProcedureAsync(ctx.OpenSql, ctx.OpenOra, ctx.Request.SourceDatabase, schema, name, ctx.GetTargetSchema(schema), ctx.Request.CreateDependentObjectStubs, ctx.RunDir, ct));
                     }
 
-                    // 6) Functions
+                    // Functions
                     foreach (var f in ctx.Functions)
                     {
                         var schema = f.Schema;
@@ -107,7 +114,7 @@ public sealed partial class MigrationEngine
                             await ctx.Engine.DeployFunctionAsync(ctx.OpenSql, ctx.OpenOra, ctx.Request.SourceDatabase, schema, name, ctx.GetTargetSchema(schema), ctx.Request.CreateDependentObjectStubs, ctx.RunDir, ct));
                     }
 
-                    // 7) Triggers (need parent table/view)
+                    // Triggers (need parent table/view)
                     foreach (var tr in ctx.Triggers)
                     {
                         var schema = tr.Schema;
@@ -118,7 +125,7 @@ public sealed partial class MigrationEngine
                             await ctx.Engine.DeployTriggerAsync(ctx.OpenSql, ctx.OpenOra, ctx.Request.SourceDatabase, schema, name, parentSchema, parentName, ctx.GetTargetSchema(parentSchema), ctx.Request.CreateDependentObjectStubs, ctx.RunDir, ct));
                     }
 
-                    // 8) Synonyms
+                    // Synonyms
                     foreach (var syn in ctx.Synonyms)
                     {
                         var schema = syn.Schema;

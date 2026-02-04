@@ -35,7 +35,17 @@ public sealed partial class MigrationEngine
             {
                 if (ctx.Request.CloneSourceSchemas)
                 {
+                    // IMPORTANT: include schemas that may exist only as containers for dependent objects
+                    // (e.g., SQL Server schema 'Sequences' that hosts sequence objects referenced by defaults).
                     var sourceSchemas = ctx.Tables.Select(t => t.Schema)
+                        .Concat(ctx.Views.Select(v => v.Schema))
+                        .Concat(ctx.Procedures.Select(p => p.Schema))
+                        .Concat(ctx.Functions.Select(f => f.Schema))
+                        .Concat(ctx.Triggers.Select(tr => tr.Schema))
+                        .Concat(ctx.Synonyms.Select(sy => sy.Schema))
+                        .Concat(ctx.Sequences.Select(sq => sq.Schema))
+                        .Concat(ctx.UserDefinedTypes.Select(udt => udt.Schema))
+                        .Where(s => !string.IsNullOrWhiteSpace(s))
                         .Distinct(StringComparer.OrdinalIgnoreCase)
                         .OrderBy(s => s, StringComparer.OrdinalIgnoreCase)
                         .ToList();

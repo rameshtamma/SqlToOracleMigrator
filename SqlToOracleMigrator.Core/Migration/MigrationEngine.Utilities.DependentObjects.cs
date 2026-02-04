@@ -814,4 +814,103 @@ WHERE s.name = @SchemaName AND seq.name = @SeqName;";
         if (idx < 0) return input;
         return input.Substring(0, idx) + replace + input.Substring(idx + find.Length);
     }
+
+    /// <summary>
+    /// Grant SELECT on sequences across all migrated schemas.
+    ///
+    /// Why:
+    ///   - SQL Server commonly stores sequences in a dedicated schema (e.g., "Sequences")
+    ///   - Table DEFAULT expressions and code may reference schema-qualified sequences
+    ///   - In Oracle, cross-schema NEXTVAL usage requires SELECT privilege on the sequence
+    ///
+    /// This method is idempotent: it safely ignores "already granted" and missing grants.
+    /// </summary>
+    internal async Task GrantSequenceUsageAcrossSchemasAsync(OracleConnection openOra, MigrationContext ctx, CancellationToken ct)
+    {
+        if (ctx.Sequences.Count == 0) return;
+
+        // Determine all target schemas involved in this migration.
+        var allTargetSchemas = ctx.Tables.Select(t => t.Schema)
+            .Concat(ctx.Views.Select(v => v.Schema))
+            .Concat(ctx.Procedures.Select(p => p.Schema))
+            .Concat(ctx.Functions.Select(f => f.Schema))
+            .Concat(ctx.Triggers.Select(tr => tr.Schema))
+            .Concat(ctx.Synonyms.Select(sy => sy.Schema))
+            .Concat(ctx.Sequences.Select(sq => sq.Schema))
+            .Concat(ctx.UserDefinedTypes.Select(udt => udt.Schema))
+            .Where(s => !string.IsNullOrWhiteSpace(s))
+            .Select(ctx.GetTargetSchema)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (allTargetSchemas.Count <= 1) return;
+
+        foreach (var seq in ctx.Sequences)
+        {
+            ct.ThrowIfCancellationRequested();
+            var owner = ctx.GetTargetSchema(seq.Schema);
+            var ownerQ = OracleIdent.FormatSchema(owner);
+            var seqQ = OracleIdent.QuoteIdent(seq.Name);
+
+            foreach (var grantee in allTargetSchemas)
+            {
+                if (string.Equals(grantee, owner, StringComparison.OrdinalIgnoreCase)) continue;
+                var granteeQ = OracleIdent.FormatSchema(grantee);
+
+                // Use a safe PL/SQL wrapper: ignore errors if privilege already exists or object not yet visible.
+                var plsql = $@"BEGIN
+  EXECUTE IMMEDIATE 'GRANT SELECT ON {ownerQ}.{seqQ} TO {granteeQ}';
+EXCEPTION
+  WHEN OTHERS THEN
+    -- ignore (already granted / insufficient privileges / etc.)
+    NULL;
+END;";
+
+                await using var cmd = new OracleCommand(plsql, openOra);
+                await cmd.ExecuteNonQueryAsync(ct);
+            }
+        }
+    }
+
+    /// <summary>
+    /// DataDefValidation validates DDL via parsing on the target. Oracle requires referenced sequences to exist
+    /// when parsing DEFAULT <schema>.<sequence>.NEXTVAL. This helper creates minimal "stub" sequences on-demand
+    /// to allow validation to proceed. DdlGeneration will later drop/recreate sequences with correct properties.
+    /// </summary>
+    internal async Task EnsureSequencesForDdlValidationAsync(OracleConnection openOra, string ddl, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(ddl)) return;
+
+        var matches = System.Text.RegularExpressions.Regex.Matches(
+            ddl,
+            @"DEFAULT\s+(?<owner>[A-Za-z0-9_]+)\.(?<seq>[A-Za-z0-9_]+)\.NEXTVAL",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+        if (matches.Count == 0) return;
+
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (System.Text.RegularExpressions.Match m in matches)
+        {
+            var owner = m.Groups["owner"].Value.Trim();
+            var seq = m.Groups["seq"].Value.Trim();
+            if (string.IsNullOrWhiteSpace(owner) || string.IsNullOrWhiteSpace(seq)) continue;
+
+            var key = $"{owner}.{seq}";
+            if (!seen.Add(key)) continue;
+
+            var ownerQ = OracleIdent.FormatSchema(owner);
+            var seqQ = OracleIdent.QuoteIdent(seq);
+
+            // Create the sequence if it does not exist. Ignore failures.
+            var plsql = $@"BEGIN
+  EXECUTE IMMEDIATE 'CREATE SEQUENCE {ownerQ}.{seqQ} START WITH 1 INCREMENT BY 1 NOCACHE NOCYCLE';
+EXCEPTION
+  WHEN OTHERS THEN NULL;
+END;";
+
+            await using var cmd = new OracleCommand(plsql, openOra);
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+    }
 }

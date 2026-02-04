@@ -111,6 +111,8 @@ public static class OracleDdlGenerator
 
 internal static class OracleDefaultConverter
 {
+    // Converts SQL Server DEFAULT definitions into Oracle-compatible DEFAULT expressions.
+    // Goal: preserve intent while staying within Oracle DEFAULT-expression constraints.
     public static string? Convert(string? sqlDefaultDefinition)
     {
         if (string.IsNullOrWhiteSpace(sqlDefaultDefinition)) return null;
@@ -120,29 +122,165 @@ internal static class OracleDefaultConverter
         while (s.StartsWith("(") && s.EndsWith(")") && s.Length > 2)
         {
             var inner = s.Substring(1, s.Length - 2).Trim();
-            // Stop unwrapping if parentheses are imbalanced.
             if (!IsBalanced(inner)) break;
             s = inner;
         }
+
+        // Normalize bracket quoting early: [dbo].[X] -> dbo.X
+        s = s.Replace("[", "").Replace("]", "");
 
         // Remove Unicode string literal prefix: N'abc' => 'abc'
         if (s.StartsWith("N'", StringComparison.OrdinalIgnoreCase))
             s = "'" + s.Substring(2);
 
-        // Common function mappings
-        if (s.Equals("GETDATE()", StringComparison.OrdinalIgnoreCase) || s.Equals("GETDATE", StringComparison.OrdinalIgnoreCase))
+        // Strip common SQL Server wrapper functions that appear in defaults (WideWorldImporters).
+        s = StripConvertWrapper(s);
+        s = StripCastWrapper(s);
+
+        // Normalize common function-style tokens without parentheses
+        // (some systems store GETDATE rather than GETDATE()).
+        if (string.Equals(s, "GETDATE()", StringComparison.OrdinalIgnoreCase) || string.Equals(s, "GETDATE", StringComparison.OrdinalIgnoreCase))
             return "SYSDATE";
-        if (s.Equals("NEWID()", StringComparison.OrdinalIgnoreCase) || s.Equals("NEWID", StringComparison.OrdinalIgnoreCase))
+
+        if (string.Equals(s, "SYSDATETIME()", StringComparison.OrdinalIgnoreCase) || string.Equals(s, "SYSDATETIME", StringComparison.OrdinalIgnoreCase))
+            return "SYSTIMESTAMP";
+
+        if (string.Equals(s, "GETUTCDATE()", StringComparison.OrdinalIgnoreCase) || string.Equals(s, "GETUTCDATE", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(s, "SYSUTCDATETIME()", StringComparison.OrdinalIgnoreCase) || string.Equals(s, "SYSUTCDATETIME", StringComparison.OrdinalIgnoreCase))
+            return "SYS_EXTRACT_UTC(SYSTIMESTAMP)";
+
+        if (string.Equals(s, "NEWID()", StringComparison.OrdinalIgnoreCase) || string.Equals(s, "NEWID", StringComparison.OrdinalIgnoreCase))
             return "SYS_GUID()";
 
-        // Bit/boolean typical defaults
+        // SQL Server sequences: NEXT VALUE FOR schema.sequence -> schema.sequence.NEXTVAL
+        var nextVal = TryConvertNextValueFor(s);
+        if (!string.IsNullOrWhiteSpace(nextVal))
+            return nextVal;
+
+        // Bit/boolean typical defaults (keep as-is)
         if (s.Equals("1")) return "1";
         if (s.Equals("0")) return "0";
 
-        // Remove SQL Server bracket quoting in literals/idents; keep as-is otherwise.
-        s = s.Replace("[", "").Replace("]", "");
-
         return s;
+    }
+
+    private static string StripConvertWrapper(string s)
+    {
+        // CONVERT(targetType, expr [, style]) -> expr
+        // We only need this for defaults; we retain the inner expression.
+        // Handles cases like: CONVERT(datetime2(7),sysutcdatetime())
+        for (var i = 0; i < 5; i++) // limit recursion
+        {
+            var trimmed = s.Trim();
+            if (!trimmed.StartsWith("CONVERT(", StringComparison.OrdinalIgnoreCase))
+                return s;
+
+            var inner = ExtractParenInner(trimmed, "CONVERT");
+            if (inner is null) return s;
+
+            var args = SplitTopLevelArgs(inner);
+            if (args.Count < 2) return s;
+
+            s = args[1].Trim();
+        }
+        return s;
+    }
+
+    private static string StripCastWrapper(string s)
+    {
+        // CAST(expr AS type) -> expr
+        for (var i = 0; i < 5; i++)
+        {
+            var trimmed = s.Trim();
+            if (!trimmed.StartsWith("CAST(", StringComparison.OrdinalIgnoreCase))
+                return s;
+
+            var inner = ExtractParenInner(trimmed, "CAST");
+            if (inner is null) return s;
+
+            // Find top-level " AS " (not inside parentheses)
+            var depth = 0;
+            for (var idx = 0; idx <= inner.Length - 4; idx++)
+            {
+                var ch = inner[idx];
+                if (ch == '(') depth++;
+                else if (ch == ')') depth--;
+                if (depth != 0) continue;
+
+                if (inner.AsSpan(idx).StartsWith(" AS ", StringComparison.OrdinalIgnoreCase))
+                {
+                    s = inner.Substring(0, idx).Trim();
+                    goto NEXT;
+                }
+            }
+            return s;
+        NEXT:
+            continue;
+        }
+        return s;
+    }
+
+    private static string? TryConvertNextValueFor(string s)
+    {
+        // Accept forms:
+        // NEXT VALUE FOR schema.sequence
+        // NEXT VALUE FOR sequence
+        var idx = s.IndexOf("NEXT VALUE FOR", StringComparison.OrdinalIgnoreCase);
+        if (idx < 0) return null;
+
+        var after = s.Substring(idx + "NEXT VALUE FOR".Length).Trim();
+        if (string.IsNullOrWhiteSpace(after)) return null;
+
+        // Remove any trailing tokens (rare); keep identifier-ish prefix (letters/digits/_/.)
+        var ident = new string(after.TakeWhile(ch => char.IsLetterOrDigit(ch) || ch == '_' || ch == '.').ToArray());
+        if (string.IsNullOrWhiteSpace(ident)) return null;
+
+        return $"{ident}.NEXTVAL";
+    }
+
+    private static string? ExtractParenInner(string s, string funcName)
+    {
+        // expects FUNC(...)
+        var open = s.IndexOf('(');
+        if (open < 0) return null;
+        var close = FindMatchingParen(s, open);
+        if (close < 0) return null;
+        return s.Substring(open + 1, close - open - 1);
+    }
+
+    private static int FindMatchingParen(string s, int openIndex)
+    {
+        var depth = 0;
+        for (var i = openIndex; i < s.Length; i++)
+        {
+            if (s[i] == '(') depth++;
+            else if (s[i] == ')')
+            {
+                depth--;
+                if (depth == 0) return i;
+            }
+        }
+        return -1;
+    }
+
+    private static List<string> SplitTopLevelArgs(string s)
+    {
+        var list = new List<string>();
+        var depth = 0;
+        var start = 0;
+        for (var i = 0; i < s.Length; i++)
+        {
+            var ch = s[i];
+            if (ch == '(') depth++;
+            else if (ch == ')') depth--;
+            else if (ch == ',' && depth == 0)
+            {
+                list.Add(s.Substring(start, i - start));
+                start = i + 1;
+            }
+        }
+        list.Add(s.Substring(start));
+        return list;
     }
 
     private static bool IsBalanced(string s)

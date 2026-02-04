@@ -49,16 +49,20 @@ public sealed partial class MigrationEngine
                         continue;
 
                     await ctx.ToolMigObjectAsync(MigrationStage.DataDefValidation, t.Schema, t.Table, "TABLE", "InProgress", null, null);
+                    string? ddlForDiagnostics = null;
                     try
                     {
                         var columns = await ctx.Engine._sqlMeta.GetTableColumnsAsync(ctx.OpenSql, ctx.Request.SourceDatabase, t.Schema, t.Table, ct);
-                        var ddl = OracleDdlGenerator.CreateTableDdl(ctx.GetTargetSchema(t.Schema), t.Table, columns, ctx.Engine._typeMapper);
-                        await ctx.Engine._oraMeta.ValidateDdlAsync(ctx.OpenOra, ddl, ct);
+                        ddlForDiagnostics = OracleDdlGenerator.CreateTableDdl(ctx.GetTargetSchema(t.Schema), t.Table, columns, ctx.Engine._typeMapper);
+                        await ctx.Engine._oraMeta.ValidateDdlAsync(ctx.OpenOra, ddlForDiagnostics, ct);
                         await ctx.ToolMigObjectAsync(MigrationStage.DataDefValidation, t.Schema, t.Table, "TABLE", "Completed", null, null);
                     }
                     catch (Exception ex)
                     {
-                        errors.Add(StageError.FromException(MigrationStage.DataDefValidation, t.Schema, t.Table, ex));
+                        var details = (ddlForDiagnostics is null)
+                            ? ex.ToString()
+                            : $"Generated DDL:\n{ddlForDiagnostics}\n\nException:\n{ex}";
+                        errors.Add(new StageError(MigrationStage.DataDefValidation.ToString(), t.Schema, t.Table, ex.GetType().Name, ex.Message, details));
                         await ctx.ToolMigObjectAsync(MigrationStage.DataDefValidation, t.Schema, t.Table, "TABLE", "Failed", ex.GetType().Name, ex.Message);
                         ctx.AppendLog($"[ValidateDefinitions][ERROR] {t.Schema}.{t.Table}: {ex.Message}");
                         if (ctx.StageMode == ErrorHandlingMode.FailFast) throw;
