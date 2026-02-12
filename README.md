@@ -1,111 +1,51 @@
-# SQL Server → Oracle Migration (WPF / .NET 8)
+# MigrationUpgradeV1
 
-This solution is a **.NET 8 WPF** desktop application for **SQL Server → Oracle** migration.
+MigrationUpgradeV1 is a focused upgrade of the migration pipeline to improve **Oracle compatibility**, **stage-aware inserts**, and **diagnostics** for common Oracle runtime/DDL issues.
 
-## Projects
+> **Status:** Documentation pack generated on February 12, 2026.
 
-- **SqlToOracleMigrator.Core** (net8.0)
-  - Connection models + validation
-  - ConnectionManager (LRU eviction; max 2 active per engine)
-  - Metadata providers (SQL Server / Oracle)
-  - MigrationEngine (DDL generation + data copy + basic validation)
-  - JSON stores (queries, mappings, connections)
+## What this project does
 
-- **SqlToOracleMigrator.Desktop** (net8.0-windows, WPF)
-  - Main window: Connections panel, Combined Inventory, Logs
-  - Connection wizard: SQL Server + Oracle connection UI (per mockups)
-  - Migration wizard: launches end-to-end database migration
-  - Wizard-style flow aligned with ToolDesignWizard.docx (Introduction → Source → Convert → Target → Move Data → Summary)
+- Migrates data and schema artifacts from SQL Server to Oracle.
+- Generates Oracle-friendly DDL and DML.
+- Runs staged migration steps with resilient error handling and diagnostics.
 
-## Prerequisites
+## Notable recent fixes (from prior work)
 
-- Windows 10/11
-- Visual Studio 2022 (17.8+) or later
-- .NET 8 SDK
-- Network access to your SQL Server and Oracle instances
+- **WWI migration DDL defaults:** Converted SQL Server `NEXT VALUE FOR` / `CAST` / `CONVERT` defaults to Oracle `SEQUENCE.NEXTVAL`.
+- **DataDefValidation diagnostics:** Improved reporting by including generated DDL in validation output.
 
-## Build & run
+## High-level architecture
 
-1. Open `SqlToOracleMigrator.sln`.
-2. Set **SqlToOracleMigrator.Desktop** as Startup Project.
-3. Build + run.
+- **UI / CLI (optional):** Orchestrates migrations, collects settings, triggers runs.
+- **Core Engine:** Inventory, mapping, DDL generation, DML generation, stage runner.
+- **Oracle Adapter:** Connection/transaction helpers, bulk copy, retry logic.
+- **Diagnostics:** Structured logging, error classification, run summaries.
 
+See `docs/architecture.md` for more.
 
-### Command-line build
+## Quick start (template)
 
-You can also build from a terminal:
+1. Configure connections (source SQL Server + target Oracle).
+2. Run inventory (discover objects).
+3. Generate Oracle DDL + apply.
+4. Run data migration (stage-aware inserts, bulk copy).
+5. Validate (row counts, sampling, checksum where available).
 
-- PowerShell: `./build.ps1 Release`
-- CMD: `build.cmd Release`
+> If you want this README to match your repo exactly, drop in your current **solution folder structure** and **run command(s)** and I’ll tailor it.
 
-## Configuration files
+## Repo map (template)
 
-All configuration is stored under the app output folder:
+- `src/`
+  - `MigrationUpgradeV1.Core/`
+  - `MigrationUpgradeV1.Engine/`
+  - `MigrationUpgradeV1.Oracle/`
+  - `MigrationUpgradeV1.Cli/` (optional)
+  - `MigrationUpgradeV1.Desktop/` (optional)
+- `docs/`
+- `scripts/`
+- `tests/`
 
-```
-Data/
-  Config/
-    appsettings.json
-    auth_types.json
-    connection_types.json
-    datatype_mappings.json
-    sqlqueries.json
-  Connections/
-    *.json
-  Logs/
-    yyyyMMdd/
-      *.log
-      run_*.json
-```
+## How to contribute
 
-### Password handling
-
-- If **Save Password** is checked, the password is encrypted using **DPAPI (CurrentUser)**.
-- If **Save Password** is unchecked, the password is never persisted; you will be prompted when connecting or starting a migration.
-
-## Key behaviors (guardrails)
-
-- **No background connections:** a connection is only opened on **Connect**. Saved connections are validated only when you test/save/connect.
-- **Disconnect & Reset:** Disconnect disposes connection objects; Reset disconnects + re-tests + reconnects.
-- **Active connection limits:** maximum **2** active SQL connections and **2** active Oracle connections. When exceeded, least-recently-used is evicted.
-- **Inventory expansion is lazy:** object lists load only on expand and in bounded pages (`limits.maxRowsPerExpand`).
-- **Identifiers are validated:** basic checks exist for Oracle schema/user identifiers.
- - **Oracle schema prefixes are unquoted by default:** avoids ORA-01918 caused by quoted usernames (e.g., "system").
-
-## Known limitations
-
-- Migration engine currently migrates **tables** (DDL + row copy). Other object types (views/procs/functions/etc.) are not converted yet.
-- Oracle schema creation is not performed; the schema/user must already exist.
-- Data copy is implemented as a straightforward row-by-row insert (batched commits). For very large databases you will likely enhance batching/array binding.
-
-## Architecture and design patterns
-
-This solution intentionally follows a **layered architecture** with **MVVM** in the WPF app:
-
-- **Desktop (WPF) – MVVM**
-  - *ViewModels* (e.g., `MainViewModel`, `ValidateMigrationViewModel`) expose state + async commands.
-  - *Views* bind to ViewModels (no direct DB access in UI).
-  - *AsyncRelayCommand* keeps UI responsive during I/O.
-
-- **Core – services and providers**
-  - `ConnectionManager` owns lifetime + caching (LRU eviction) for open SQL/Oracle connections.
-  - `SqlServerMetadataProvider` / `OracleMetadataProvider` encapsulate metadata queries.
-  - `InventoryService` composes providers to produce **Combined Inventory** summaries and paged object lists.
-  - `MigrationEngine` orchestrates the end-to-end migration workflow.
-
-### Combined Inventory (read-only)
-
-- The top grid shows per-database (SQL) / per-service (Oracle) summary metrics.
-- Expanding a row loads *paged* object details (virtualized DataGrid).
-- Double-clicking a connection in the left tree will load inventory and expand the most relevant row so object details become visible.
-
-### Post-Migration Validation
-
-- Source DB list is loaded from the selected SQL connection (`sys.databases`).
-- Schemas are loaded from the selected source database (`sys.schemas`) and are **selected by default**.
-- Reports are written to the configured output folder and **Open Last Report** launches the latest JSON report via the default viewer.
-
-### Key implementation notes
-
-- **Credential prompts are skipped** when an active connection already exists.
-- **Metadata access is best-effort** and uses non-DBA views where possible to work in restricted environments.
+See `docs/contributing.md`.
