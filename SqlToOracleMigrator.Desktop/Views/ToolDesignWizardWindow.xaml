@@ -1,6 +1,8 @@
 <Window x:Class="SqlToOracleMigrator.Desktop.Views.ToolDesignWizardWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="clr-namespace:SqlToOracleMigrator.Desktop.ViewModels"
+        xmlns:tree="clr-namespace:SqlToOracleMigrator.Desktop.ViewModels.Tree"
         Title="Migration Wizard" Height="640" Width="980"
         WindowStartupLocation="CenterOwner">
 
@@ -16,7 +18,7 @@
             <DockPanel>
                 <StackPanel>
                     <TextBlock Text="SQL Server → Oracle Migration" FontSize="18" FontWeight="SemiBold"/>
-                    <TextBlock Text="Wizard-style flow aligned with ToolDesignWizard.docx (no change to existing migration behavior)." Foreground="#666" Margin="0,4,0,0"/>
+                    <TextBlock Text="Upgraded wizard flow (v1.1): 4 phase groups / 10 stages, OracleBulkCopy migration, spatial/XML staging + strict security checks." Foreground="#666" Margin="0,4,0,0"/>
                 </StackPanel>
             </DockPanel>
         </Border>
@@ -25,7 +27,7 @@
         <TabControl Grid.Row="1"
                     SelectedIndex="{Binding CurrentStepIndex, Mode=TwoWay}"
                     TabStripPlacement="Left"
-                    BorderThickness="0">
+                    BorderThickness="0" ToolTip="Migration wizard steps. Use Next/Back to navigate. Review settings carefully before starting a run.">
             <TabControl.Resources>
                 <Style TargetType="TabItem">
                     <Setter Property="Margin" Value="0,0,0,2"/>
@@ -59,6 +61,38 @@
                         </Border>
                     </StackPanel>
                 </ScrollViewer>
+            </TabItem>
+
+            <!-- v1.1: Pipeline (4 groups / 10 stages) -->
+            <TabItem Header="Pipeline">
+                <Grid Margin="14">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <StackPanel Orientation="Horizontal" Grid.Row="0" Margin="0,0,0,10">
+                        <TextBlock Text="Plan Option:" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                        <ComboBox Width="220"
+                                  ItemsSource="{Binding PlanOptions}"
+                                  SelectedItem="{Binding SelectedPlanOption, Mode=TwoWay}"/>
+                        <TextBlock Text="(Stages always shown below; selection controls what runs)" Foreground="#666"
+                                   VerticalAlignment="Center" Margin="12,0,0,0"/>
+                    </StackPanel>
+
+                    <Border Grid.Row="1" BorderBrush="#D6DCE7" BorderThickness="1" CornerRadius="6" Padding="10" Background="#FAFBFD">
+                        <TreeView ItemsSource="{Binding PipelineNodes}">
+                            <TreeView.Resources>
+                                <HierarchicalDataTemplate DataType="{x:Type vm:TreeGroupNodeViewModel}" ItemsSource="{Binding Children}">
+                                    <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold" FontSize="14" Margin="0,3,0,3"/>
+                                </HierarchicalDataTemplate>
+                                <DataTemplate DataType="{x:Type tree:SimpleLeafNodeViewModel}">
+                                    <TextBlock Text="{Binding DisplayName}" Margin="12,2,0,2"/>
+                                </DataTemplate>
+                            </TreeView.Resources>
+                        </TreeView>
+                    </Border>
+                </Grid>
             </TabItem>
 
             <!-- 1: Source Database -->
@@ -107,7 +141,7 @@
                               IsReadOnly="True"
                               CanUserAddRows="False"
                               HeadersVisibility="Column"
-                              GridLinesVisibility="Horizontal">
+                              GridLinesVisibility="Horizontal" ToolTip="Read-only type mapping table used during DDL generation. Source types are converted using templates from Data/type_mappings.json.">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="SQL Type" Binding="{Binding SqlType}" Width="2*"/>
                             <DataGridTextColumn Header="Oracle Template" Binding="{Binding OracleTemplate}" Width="5*"/>
@@ -138,19 +172,19 @@
                                 <DockPanel Grid.Row="0" Grid.Column="1" LastChildFill="False">
                                     <ComboBox Height="28" Width="420"
                                               ItemsSource="{Binding TargetOracleConnections}"
-                                              SelectedItem="{Binding SelectedTargetOracleName}"/>
-                                    <Button Content="Refresh" Width="90" Margin="10,0,0,0" Command="{Binding RefreshTargetsCommand}"/>
-                                    <Button Content="Manage PDBs" Width="110" Margin="10,0,0,0" Command="{Binding ManagePdbsCommand}"/>
+                                              SelectedItem="{Binding SelectedTargetOracleName}" ToolTip="Select the target Oracle connection (usually a PDB connection). This is where objects/data will be created."/>
+                                    <Button Content="Refresh" Width="90" Margin="10,0,0,0" Command="{Binding RefreshTargetsCommand}" ToolTip="Reload the list of available Oracle connections from the saved config files."/>
+                                    <Button Content="Manage PDBs" Width="110" Margin="10,0,0,0" Command="{Binding ManagePdbsCommand}" ToolTip="Open PDB Manager to list/delete PDBs in the selected CDB (requires SYSDBA). Use with caution."/>
                                 </DockPanel>
 
                                 <TextBlock Grid.Row="1" Grid.Column="0" Text="Schema Strategy" VerticalAlignment="Top" Margin="0,10,0,0"/>
                                 <StackPanel Grid.Row="1" Grid.Column="1" Margin="0,10,0,0">
-                                    <CheckBox Content="Clone source schemas 1:1 into Oracle (multi-schema)" IsChecked="{Binding CloneSourceSchemas}"/>
-                                    <CheckBox Content="Auto-create missing target schemas/users (requires admin privileges)" IsChecked="{Binding AutoCreateTargetSchemas}" Margin="0,6,0,0"/>
+                                    <CheckBox Content="Clone source schemas 1:1 into Oracle (multi-schema)" IsChecked="{Binding CloneSourceSchemas}" ToolTip="If enabled, the tool migrates each source schema into a corresponding Oracle schema/user (1:1). If disabled, all objects are created under the single Target Schema/User you specify."/>
+                                    <CheckBox Content="Auto-create missing target schemas/users (requires admin privileges)" IsChecked="{Binding AutoCreateTargetSchemas}" Margin="0,6,0,0" ToolTip="Automatically create missing target schemas/users. Requires elevated privileges on the Oracle side. If you do not have privileges, leave unchecked and pre-create schemas/users."/>
                                 </StackPanel>
 
                                 <TextBlock Grid.Row="2" Grid.Column="0" Text="Target Schema/User" VerticalAlignment="Center" Margin="0,10,0,0"/>
-                                <TextBox Grid.Row="2" Grid.Column="1" Height="28" Margin="0,10,0,0" Text="{Binding TargetSchema}">
+                                <TextBox Grid.Row="2" Grid.Column="1" Height="28" Margin="0,10,0,0" Text="{Binding TargetSchema}" ToolTip="Target Oracle schema/user for single-schema mode. Disabled when Clone Source Schemas is enabled. Oracle schema names are user names; ensure privileges exist to create objects.">
                                     <TextBox.Style>
                                         <Style TargetType="TextBox">
                                             <Setter Property="IsEnabled" Value="True"/>
@@ -164,7 +198,7 @@
                                 </TextBox>
 
                                 <TextBlock Grid.Row="3" Grid.Column="0" Text="Degree of Parallelism" VerticalAlignment="Center" Margin="0,10,0,0"/>
-                                <TextBox Grid.Row="3" Grid.Column="1" Height="28" Width="120" Margin="0,10,0,0" Text="{Binding DegreeOfParallelism}"/>
+                                <TextBox Grid.Row="3" Grid.Column="1" Height="28" Width="120" Margin="0,10,0,0" Text="{Binding DegreeOfParallelism}" ToolTip="Degree of parallelism (DOP) for data migration. Higher values increase throughput but also increase load on SQL/Oracle. Recommended starting point: 2–4. Reduce if you see timeouts or resource pressure."/>
                             </Grid>
                         </GroupBox>
 
@@ -208,16 +242,16 @@
 
                         <GroupBox Header="Validation Stages" Padding="12" Margin="0,12,0,0">
                             <StackPanel>
-                                <CheckBox Content="Validate Definitions (parse-only DDL; no commit)" IsChecked="{Binding EnableDataDefValidation}"/>
-                                <CheckBox Content="Validate Data (dry-run inserts; rollback)" IsChecked="{Binding EnableDataValidation}" Margin="0,6,0,0"/>
+                                <CheckBox Content="Validate Definitions (parse-only DDL; no commit)" IsChecked="{Binding EnableDataDefValidation}" ToolTip="Parse-only DDL validation. Generates Oracle DDL and validates syntax without committing changes. Useful to catch conversion errors early."/>
+                                <CheckBox Content="Validate Data (dry-run inserts; rollback)" IsChecked="{Binding EnableDataValidation}" Margin="0,6,0,0" ToolTip="Dry-run data insert validation. Attempts inserts and rolls back. Useful for catching datatype/binding issues before full load."/>
 
                                 <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
                                     <TextBlock Text="Dry-run rows/table:" VerticalAlignment="Center" Width="140"/>
-                                    <TextBox Width="120" Height="28" Text="{Binding DataValidationRowLimit}"/>
+                                    <TextBox Width="120" Height="28" Text="{Binding DataValidationRowLimit}" ToolTip="Maximum number of rows per table for dry-run validation. Use a small number (e.g., 100–1000) for quick feedback. 0 disables."/>
                                     <TextBlock Text="(0 = skip)" VerticalAlignment="Center" Margin="10,0,0,0" Foreground="#666"/>
                                 </StackPanel>
 
-                                <CheckBox Content="Validate full dataset (all rows) - on demand" IsChecked="{Binding ValidateFullDataset}" Margin="0,10,0,0"/>
+                                <CheckBox Content="Validate full dataset (all rows) - on demand" IsChecked="{Binding ValidateFullDataset}" Margin="0,10,0,0" ToolTip="Enable full dataset validation (all rows). This can be expensive and is typically run on demand after a successful migration."/>
                             </StackPanel>
                         </GroupBox>
 
@@ -227,12 +261,12 @@
                                     <TextBlock Text="Error handling mode:" VerticalAlignment="Center" Width="150"/>
                                     <ComboBox Width="240" Height="28"
                                               ItemsSource="{Binding ErrorHandlingModes}"
-                                              SelectedItem="{Binding SelectedErrorHandlingMode}"/>
+                                              SelectedItem="{Binding SelectedErrorHandlingMode}" ToolTip="How the migration behaves when an object/table fails. Options typically include continue-and-log vs fail-fast."/>
                                 </StackPanel>
 
                                 <CheckBox Content="Resume previous run (skip completed stages/objects)"
                                           IsChecked="{Binding ResumePreviousRun}"
-                                          Margin="0,10,0,0"/>
+                                          Margin="0,10,0,0" ToolTip="Resume mode. On rerun, the tool skips completed stages/objects deterministically (based on ToolMig status/checkpoints)."/>
 
                                 <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
                                     <TextBlock Text="Select run:" VerticalAlignment="Center" Width="150"/>
@@ -240,7 +274,7 @@
                                               ItemsSource="{Binding ResumeRuns}"
                                               SelectedItem="{Binding SelectedResumeRun}"
                                               DisplayMemberPath="Display"
-                                              IsEnabled="{Binding IsResumeEnabled}"/>
+                                              IsEnabled="{Binding IsResumeEnabled}" ToolTip="Select a prior run to resume from. The tool will use persisted run history/checkpoints to determine what can be skipped or continued."/>
                                 </StackPanel>
 
                                 <TextBlock Text="{Binding ResumeStatus}" Foreground="#666" TextWrapping="Wrap" Margin="0,6,0,0"/>
@@ -291,10 +325,10 @@
             </Border>
 
             <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
-                <Button Content="Back" Width="110" Margin="0,0,8,0" Command="{Binding BackCommand}"/>
-                <Button Content="Next" Width="110" Margin="0,0,8,0" Command="{Binding NextCommand}"/>
-                <Button Content="Start Migration" Width="140" Margin="0,0,8,0" Command="{Binding FinishCommand}"/>
-                <Button Content="Cancel" Width="110" Command="{Binding CancelCommand}"/>
+                <Button Content="Back" Width="110" Margin="0,0,8,0" Command="{Binding BackCommand}" ToolTip="Go to the previous wizard step."/>
+                <Button Content="Next" Width="110" Margin="0,0,8,0" Command="{Binding NextCommand}" ToolTip="Proceed to the next wizard step."/>
+                <Button Content="Start Migration" Width="140" Margin="0,0,8,0" Command="{Binding FinishCommand}" ToolTip="Start the migration run with the current settings. Progress will appear in the Logs panel; results are written to disk and ToolMig tables."/>
+                <Button Content="Cancel" Width="110" Command="{Binding CancelCommand}" ToolTip="Cancel and close the wizard without starting a run."/>
             </StackPanel>
         </Grid>
     </Grid>

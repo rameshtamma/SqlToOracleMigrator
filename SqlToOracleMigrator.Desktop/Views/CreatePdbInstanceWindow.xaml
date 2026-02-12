@@ -26,7 +26,7 @@
             <TextBlock Text="Oracle Admin Connection (XE / CDB$ROOT)"/>
             <ComboBox ItemsSource="{Binding OracleAdminConnectionNames}"
                       SelectedItem="{Binding SelectedOracleAdminConnectionName}"
-                      Height="28"/>
+                      Height="28" ToolTip="Select an Oracle admin connection that points to the CDB root service (e.g., XE / CDB$ROOT). This connection must be able to create/drop PDBs."/>
             <TextBlock Margin="0,4,0,0" Foreground="#666" FontSize="12"
                        Text="This should point to the CDB root service (e.g., XE)."/>
         </StackPanel>
@@ -39,9 +39,9 @@
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
 
-                <TextBox Grid.Column="0" Height="28" Text="{Binding AdminUsername}"/>
+                <TextBox Grid.Column="0" Height="28" Text="{Binding AdminUsername}" ToolTip="Oracle admin username to use for PDB operations. You can override the username stored in the saved connection (commonly SYS)."/>
                 <CheckBox Grid.Column="1" Margin="12,0,0,0" VerticalAlignment="Center"
-                          Content="SYSDBA" IsChecked="{Binding ConnectAsSysDba}"/>
+                          Content="SYSDBA" IsChecked="{Binding ConnectAsSysDba}" ToolTip="Use SYSDBA role. Required for CREATE/DROP PDB operations. Ensure the selected admin connection supports SYSDBA."/>
             </Grid>
             <TextBlock Margin="0,4,0,0" Foreground="#666" FontSize="12"
                        Text="PDB create/drop requires SYSDBA. You can override the saved username here (e.g., SYS)."/>
@@ -51,23 +51,23 @@
             <TextBlock Text="Source SQL Database (active connection)"/>
             <ComboBox ItemsSource="{Binding SqlDatabaseNames}"
                       SelectedItem="{Binding SelectedSqlDatabaseName}"
-                      Height="28"/>
+                      Height="28" ToolTip="Select the active SQL Server database that will be used as the source. The tool can auto-derive the target PDB name from this selection."/>
             <TextBlock Margin="0,4,0,0" Foreground="#666" FontSize="12"
                        Text="{Binding SqlDatabaseStatus}" TextWrapping="Wrap"/>
             <ProgressBar Height="6" Margin="0,6,0,0" IsIndeterminate="True"
-                         Visibility="{Binding IsLoadingSqlDatabases, Converter={StaticResource BoolToVis}}"/>
+                         Visibility="{Binding IsLoadingSqlDatabases, Converter={StaticResource BoolToVis}}" ToolTip="Loading SQL database list from the active SQL connection."/>
         </StackPanel>
 
         <StackPanel Grid.Row="4" Margin="0,12,0,0">
             <TextBlock Text="Target PDB / Connection Name"/>
-            <TextBox Text="{Binding DesiredPdbName}" Height="28"/>
+            <TextBox Text="{Binding DesiredPdbName}" Height="28" ToolTip="Desired target PDB name and saved connection name. Will be sanitized to valid Oracle identifier rules. If the name already exists, the behavior depends on Override."/>
             <TextBlock Margin="0,4,0,0" Foreground="#666" FontSize="12"
                        Text="Defaults to the selected SQL database name (sanitized). You can override."/>
         </StackPanel>
 
         <StackPanel Grid.Row="5" Margin="0,10,0,0" Orientation="Vertical">
             <CheckBox Content="Override (drop and recreate) if the PDB already exists"
-                      IsChecked="{Binding OverrideIfExists}"/>
+                      IsChecked="{Binding OverrideIfExists}" ToolTip="If enabled, an existing PDB with the same name will be dropped and recreated (data loss). If disabled, the tool will generate a unique name (e.g., _V1/_V2)."/>
             <TextBlock Margin="24,2,0,0" Foreground="#666" FontSize="12"
                        Text="If checked, the existing PDB (and all its data) will be dropped and recreated."/>
             <TextBlock Margin="24,2,0,0" Foreground="#666" FontSize="12"
@@ -84,7 +84,7 @@
 
         <StackPanel Grid.Row="7" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
             <Button Width="110" Height="32" Margin="0,0,10,0" Content="Cancel" IsCancel="True"/>
-            <Button Width="150" Height="32" Content="Create" Command="{Binding CreateCommand}"/>
+            <Button Width="150" Height="32" Content="Create" Command="{Binding CreateCommand}" ToolTip="Create the PDB and persist a new Oracle PDB connection profile for use in migrations. Operations are executed using the selected admin connection and SYSDBA settings."/>
         </StackPanel>
     </Grid>
 </Window>

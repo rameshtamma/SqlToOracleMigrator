@@ -29,7 +29,7 @@
                 </Grid.ColumnDefinitions>
 
                 <Button Grid.Column="0" Margin="0,0,8,0" Padding="10,6"
-                        Command="{Binding NewConnectionCommand}">
+                        Command="{Binding NewConnectionCommand}" ToolTip="Create and save a new SQL Server or Oracle connection profile. Use this first to register source/target endpoints (stored under Data/Config).">
                     <StackPanel Orientation="Horizontal">
                         <TextBlock Text="＋" FontSize="16" Margin="0,0,6,0"/>
                         <TextBlock Text="New Database Connection"/>
@@ -37,22 +37,22 @@
                 </Button>
 
                 <Button Grid.Column="1" Margin="0,0,8,0" Padding="10,6"
-                        Command="{Binding OpenLogsFolderCommand}">
+                        Command="{Binding OpenLogsFolderCommand}" ToolTip="Open the local logs folder for this tool. Use this to review run diagnostics, errors, and stage outputs.">
                     <TextBlock Text="Open Logs Folder"/>
                 </Button>
 
                 <Button Grid.Column="2" Margin="0,0,8,0" Padding="10,6"
-                        Command="{Binding RefreshInventoryCommand}">
+                        Command="{Binding RefreshInventoryCommand}" ToolTip="Re-scan connected endpoints and rebuild the Combined Inventory view (schemas, tables, views, procedures, sequences, etc.). Run after connecting or after changes in source/target.">
                     <TextBlock Text="Refresh Inventory"/>
                 </Button>
 
                 <Button Grid.Column="3" Margin="0,0,8,0" Padding="10,6"
-                        Command="{Binding CreateTargetPdbCommand}">
+                        Command="{Binding CreateTargetPdbCommand}" ToolTip="Launch the PDB creation wizard. Requires a SYS/SYSDBA connection. Creates/drops PDBs and prepares the target container.">
                     <TextBlock Text="Create Target PDB"/>
                 </Button>
 
                 <Button Grid.Column="4" Margin="0,0,8,0" Padding="10,6"
-                        Command="{Binding ValidateMigrationCommand}">
+                        Command="{Binding ValidateMigrationCommand}" ToolTip="Open post-migration validation. Compares source vs target for selected objects/rows to confirm completeness and data quality.">
                     <TextBlock Text="Validate Migration"/>
                 </Button>
 
@@ -81,7 +81,7 @@
                                Padding="10,10,10,6"/>
                     <TreeView ItemsSource="{Binding ConnectionGroups}" Margin="6"
                               SelectedItemChanged="ConnectionsTree_SelectedItemChanged"
-                              PreviewMouseDoubleClick="ConnectionsTree_PreviewMouseDoubleClick">
+                              PreviewMouseDoubleClick="ConnectionsTree_PreviewMouseDoubleClick" ToolTip="Connections tree. Right-click a connection to Connect/Disconnect/Reset, open its config folder, or remove it. Double-click to connect/open.">
                         <TreeView.Resources>
                             <HierarchicalDataTemplate DataType="{x:Type vm:TreeGroupNodeViewModel}" ItemsSource="{Binding Children}">
                                 <StackPanel Orientation="Horizontal">
@@ -143,7 +143,7 @@
                               RowDetailsVisibilityMode="Visible"
                               SelectionMode="Single"
                               ScrollViewer.CanContentScroll="True"
-                              ScrollViewer.IsDeferredScrollingEnabled="True">
+                              ScrollViewer.IsDeferredScrollingEnabled="True" ToolTip="Combined Inventory is read-only metadata from both SQL Server and Oracle. Expand a row to view detailed objects. Use it to estimate size/complexity and verify what will be migrated.">
                         <DataGrid.RowStyle>
                             <Style TargetType="DataGridRow">
                                 <Setter Property="DetailsVisibility" Value="Collapsed"/>
@@ -217,7 +217,7 @@
                             <DataGridTemplateColumn Header="" Width="40">
                                 <DataGridTemplateColumn.CellTemplate>
                                     <DataTemplate>
-                                        <ToggleButton IsChecked="{Binding IsExpanded}" Content="▸" Width="26" Height="22"/>
+                                        <ToggleButton IsChecked="{Binding IsExpanded}" Content="▸" Width="26" Height="22" ToolTip="Expand/collapse details for this inventory row (shows underlying objects and migration status)."/>
                                     </DataTemplate>
                                 </DataGridTemplateColumn.CellTemplate>
                             </DataGridTemplateColumn>
@@ -250,12 +250,12 @@
                     <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,6">
                         <TextBlock Text="Logs" FontWeight="SemiBold" FontSize="14"/>
                         <ProgressBar Width="220" Height="16" Margin="12,2,0,0" Minimum="0" Maximum="100"
-                                     Value="{Binding MigrationProgressPercent}"/>
+                                     Value="{Binding MigrationProgressPercent}" ToolTip="Overall migration progress for the current run. Stages update this value as objects/batches complete."/>
                         <TextBlock Text="{Binding MigrationStageText}" Margin="8,0,0,0" Foreground="#666" VerticalAlignment="Center"/>
-                        <Button Content="Clear" Margin="12,0,0,0" Padding="10,2" Command="{Binding ClearLogsCommand}"/>
+                        <Button Content="Clear" Margin="12,0,0,0" Padding="10,2" Command="{Binding ClearLogsCommand}" ToolTip="Clear the on-screen log list (does not delete log files on disk)."/>
                     </StackPanel>
 
-                    <ListBox ItemsSource="{Binding LogEntries}">
+                    <ListBox ItemsSource="{Binding LogEntries}" ToolTip="Live run log output. For full details and stack traces, use Open Logs Folder to view the persisted log files.">
                         <ListBox.ItemTemplate>
                             <DataTemplate>
                                 <TextBlock Text="{Binding}" TextWrapping="Wrap"/>

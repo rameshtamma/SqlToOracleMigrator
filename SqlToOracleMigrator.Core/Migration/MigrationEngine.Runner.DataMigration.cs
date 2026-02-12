@@ -53,7 +53,14 @@ public sealed partial class MigrationEngine
                     {
                         token.ThrowIfCancellationRequested();
                         await ctx.ToolMigObjectAsync(MigrationStage.DataMigration, t.Schema, t.Table, "TABLE", "InProgress", null, null);
-                        await ctx.Engine.CopyTableAsync(ctx.OpenSql, ctx.OpenOra, ctx.Request.SourceDatabase, t.Schema, t.Table, ctx.GetTargetSchema(t.Schema), token);
+                        if (ctx.Request.UseOracleBulkCopy)
+                        {
+                            await ctx.Engine.CopyTableBulkAsync(ctx.OpenSql, ctx.OpenOra, ctx.Request.SourceDatabase, t.Schema, t.Table, ctx.GetTargetSchema(t.Schema), token);
+                        }
+                        else
+                        {
+                            await ctx.Engine.CopyTableAsync(ctx.OpenSql, ctx.OpenOra, ctx.Request.SourceDatabase, t.Schema, t.Table, ctx.GetTargetSchema(t.Schema), token);
+                        }
                         await ctx.ToolMigObjectAsync(MigrationStage.DataMigration, t.Schema, t.Table, "TABLE", "Completed", null, null);
                     }
                     catch (Exception ex)

@@ -26,7 +26,7 @@
 
                 <StackPanel Grid.Row="0" Grid.Column="0" Margin="0,0,10,0">
                     <TextBlock Text="SQL Connection" FontWeight="SemiBold" />
-                    <ComboBox ItemsSource="{Binding SqlConnections}" SelectedItem="{Binding SelectedSqlConnection}" DisplayMemberPath="Name" />
+                    <ComboBox ItemsSource="{Binding SqlConnections}" SelectedItem="{Binding SelectedSqlConnection}" DisplayMemberPath="Name" ToolTip="Select the SQL Server connection that contains the migrated source database."/>
                 </StackPanel>
 
                 <Grid Grid.Row="0" Grid.Column="1" Margin="0,0,10,0">
@@ -47,10 +47,10 @@
                               SelectedItem="{Binding SelectedSourceDatabase}"
                               IsEditable="True"
                               IsTextSearchEnabled="True"
-                              Text="{Binding SourceDatabase, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                              Text="{Binding SourceDatabase, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" ToolTip="Choose the source SQL database to validate. You can type to filter; Refresh to reload the list from SQL."/>
 
                     <Button Grid.Row="1" Grid.Column="1" Margin="8,0,0,0" Padding="10,2"
-                            Command="{Binding RefreshDatabasesCommand}" Content="Refresh" />
+                            Command="{Binding RefreshDatabasesCommand}" Content="Refresh" ToolTip="Reload databases from the selected SQL connection (requires connectivity/permissions)."/>
 
                     <TextBlock Grid.Row="2" Grid.ColumnSpan="2" Margin="0,4,0,0"
                                Text="{Binding DatabasesStatusText}" Foreground="#666" />
@@ -58,17 +58,17 @@
 
                 <StackPanel Grid.Row="0" Grid.Column="2">
                     <TextBlock Text="Oracle Connection (PDB)" FontWeight="SemiBold" />
-                    <ComboBox ItemsSource="{Binding OracleConnections}" SelectedItem="{Binding SelectedOracleConnection}" DisplayMemberPath="Name" />
+                    <ComboBox ItemsSource="{Binding OracleConnections}" SelectedItem="{Binding SelectedOracleConnection}" DisplayMemberPath="Name" ToolTip="Select the Oracle target connection (PDB) that contains the migrated schema(s)."/>
                 </StackPanel>
 
                 <StackPanel Grid.Row="1" Grid.Column="0" Margin="0,10,10,0">
                     <TextBlock Text="Schemas" FontWeight="SemiBold" />
                     <StackPanel Orientation="Horizontal" Margin="0,4,0,6">
-                        <Button Padding="10,2" Margin="0,0,8,0" Command="{Binding SelectAllSchemasCommand}" Content="Select All" />
-                        <Button Padding="10,2" Command="{Binding SelectNoneSchemasCommand}" Content="Select None" />
+                        <Button Padding="10,2" Margin="0,0,8,0" Command="{Binding SelectAllSchemasCommand}" Content="Select All" ToolTip="Select all schemas for validation."/>
+                        <Button Padding="10,2" Command="{Binding SelectNoneSchemasCommand}" Content="Select None" ToolTip="Clear schema selections."/>
                         <TextBlock Margin="12,2,0,0" Text="{Binding SchemasStatusText}" Foreground="#666" />
                     </StackPanel>
-                    <ListBox ItemsSource="{Binding Schemas}" Height="120">
+                    <ListBox ItemsSource="{Binding Schemas}" Height="120" ToolTip="Pick which schemas to validate. Only selected schemas are included in the report.">
                         <ListBox.ItemTemplate>
                             <DataTemplate>
                                 <CheckBox IsChecked="{Binding IsSelected}" Content="{Binding Name}" />
@@ -76,26 +76,26 @@
                         </ListBox.ItemTemplate>
                     </ListBox>
                     <TextBlock Text="(Fallback: comma-separated list)" Foreground="#777" Margin="0,6,0,0" />
-                    <TextBox Text="{Binding SchemasCsv}" />
+                    <TextBox Text="{Binding SchemasCsv}" ToolTip="Optional fallback: provide a comma-separated list of schemas to validate (used if the schema list cannot be loaded)."/>
                 </StackPanel>
 
                 <StackPanel Grid.Row="1" Grid.Column="1" Margin="0,10,10,0">
-                    <CheckBox IsChecked="{Binding IncludeRowCounts}" Content="Include row counts (slower)" />
-                    <CheckBox IsChecked="{Binding IncludeKeysAndInvalidChecks}" Content="Include keys + invalid object checks" />
+                    <CheckBox IsChecked="{Binding IncludeRowCounts}" Content="Include row counts (slower)" ToolTip="Include row-count comparisons between SQL and Oracle. This can be slow on very large tables."/>
+                    <CheckBox IsChecked="{Binding IncludeKeysAndInvalidChecks}" Content="Include keys + invalid object checks" ToolTip="Include primary/foreign key checks and invalid object checks (Oracle INVALID status). Recommended for structural validation."/>
                 </StackPanel>
 
                 <StackPanel Grid.Row="1" Grid.Column="2" Margin="0,10,0,0">
                     <TextBlock Text="Report output folder" FontWeight="SemiBold" />
-                    <TextBox Text="{Binding ReportOutputFolder}" />
+                    <TextBox Text="{Binding ReportOutputFolder}" ToolTip="Folder where validation reports will be written (CSV/JSON). Ensure the tool has write access."/>
                 </StackPanel>
 
                 <StackPanel Grid.Row="0" Grid.RowSpan="2" Grid.Column="3" VerticalAlignment="Bottom" Margin="10,0,0,0">
-                    <Button Padding="14,8" Command="{Binding RunValidationCommand}" Content="Run Validation" />
-                    <Button Padding="14,8" Margin="0,8,0,0" Command="{Binding OpenLastReportCommand}" Content="Open Last Report" />
+                    <Button Padding="14,8" Command="{Binding RunValidationCommand}" Content="Run Validation" ToolTip="Run validation using the selected inputs and generate a report in the output folder."/>
+                    <Button Padding="14,8" Margin="0,8,0,0" Command="{Binding OpenLastReportCommand}" Content="Open Last Report" ToolTip="Open the most recent generated validation report in the output folder."/>
                 </StackPanel>
             </Grid>
 
-            <ProgressBar Height="8" Margin="0,10,0,0" Minimum="0" Maximum="100" Value="{Binding ProgressPercent}" />
+            <ProgressBar Height="8" Margin="0,10,0,0" Minimum="0" Maximum="100" Value="{Binding ProgressPercent}" ToolTip="Validation progress indicator (0–100)."/>
             <TextBlock Margin="0,6,0,0" Text="{Binding StatusText}" Foreground="#333" />
         </StackPanel>
 
@@ -110,7 +110,7 @@
                 <TextBlock Text="{Binding SummaryText}" />
             </StackPanel>
 
-            <DataGrid Grid.Row="1" ItemsSource="{Binding Issues}" AutoGenerateColumns="False" CanUserAddRows="False">
+            <DataGrid Grid.Row="1" ItemsSource="{Binding Issues}" AutoGenerateColumns="False" CanUserAddRows="False" ToolTip="Validation issues found. Use Severity/Category/Schema/Name to locate mismatches or invalid objects.">
                 <DataGrid.Columns>
                     <DataGridTextColumn Header="Severity" Binding="{Binding Severity}" Width="90" />
                     <DataGridTextColumn Header="Category" Binding="{Binding Category}" Width="160" />

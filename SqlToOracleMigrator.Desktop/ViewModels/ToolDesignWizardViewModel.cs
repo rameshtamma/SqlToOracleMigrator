@@ -4,7 +4,7 @@ using SqlToOracleMigrator.Core;
 using SqlToOracleMigrator.Core.Tracking;
 using SqlToOracleMigrator.Desktop.Services;
 using SqlToOracleMigrator.Desktop.Views;
-
+using SqlToOracleMigrator.Desktop.ViewModels.Tree;
 namespace SqlToOracleMigrator.Desktop.ViewModels;
 
 public sealed class ToolDesignWizardViewModel : NotifyBase
@@ -37,6 +37,34 @@ public sealed class ToolDesignWizardViewModel : NotifyBase
     private string _resumeStatus = "";
 
     public ObservableCollection<ResumeRunOption> ResumeRuns { get; } = new();
+
+    // v1.1 pipeline UI: 4 phase groups / 10 stages
+    private MigrationPlanOption _selectedPlanOption = MigrationPlanOption.Migrate;
+
+    public ObservableCollection<MigrationPlanOption> PlanOptions { get; } = new()
+    {
+        MigrationPlanOption.Feasibility,
+        MigrationPlanOption.DdlValidation,
+        MigrationPlanOption.DataValidation,
+        MigrationPlanOption.Migrate,
+        MigrationPlanOption.FullMigration
+    };
+
+    public MigrationPlanOption SelectedPlanOption
+    {
+        get => _selectedPlanOption;
+        set
+        {
+            if (Set(ref _selectedPlanOption, value))
+            {
+                BuildPipelineNodes();
+            }
+        }
+    }
+
+    public ObservableCollection<TreeNodeViewModel> PipelineNodes { get; } = new();
+
+
 
     private string _status = "";
     private string _error = "";
@@ -75,6 +103,7 @@ public sealed class ToolDesignWizardViewModel : NotifyBase
         CancelCommand = new RelayCommand(() => RequestClose?.Invoke(false));
 
         RefreshTargets();
+        BuildPipelineNodes();
     }
 
     public string SourceConnectionName { get; }
@@ -806,4 +835,38 @@ public sealed class ToolDesignWizardViewModel : NotifyBase
             RequestJson = run.RequestJson;
         }
     }
+
+    private void BuildPipelineNodes()
+    {
+        PipelineNodes.Clear();
+
+        // Always show full 10-stage pipeline grouped into 4 major categories (your demo expectation).
+        PipelineNodes.Add(MakeGroup("Connect & Assess", 
+            "1. Connection Fingerprinting",
+            "2. Deep Discovery",
+            "3. Planning & Topological Graph"));
+
+        PipelineNodes.Add(MakeGroup("Plan & Prepare", 
+            "4. Provisioning",
+            "5. DDL Generation & Dry Run",
+            "6. Skeleton Deployment"));
+
+        PipelineNodes.Add(MakeGroup("Build & Load", 
+            "7. Data Strategy & Sampling",
+            "8. Parallel Data Migration (OracleBulkCopy)"));
+
+        PipelineNodes.Add(MakeGroup("Enforce & Verify", 
+            "9. Post-Load Enforcement (Convert → Constraints/Indexes → Stats)",
+            "10. Final Verification (Strict Security Replication)"));
+
+        // Helper method updated to disambiguate constructor call
+        TreeGroupNodeViewModel MakeGroup(string name, params string[] stages)
+        {
+            var g = (TreeGroupNodeViewModel)Activator.CreateInstance(typeof(TreeGroupNodeViewModel), name)!;
+            foreach (var s in stages) g.Children.Add(new SimpleLeafNodeViewModel(s));
+            return g;
+        }
+    }
+
+
 }

@@ -1,6 +1,7 @@
 ﻿using Microsoft.Data.SqlClient;
 using Oracle.ManagedDataAccess.Client;
 using Oracle.ManagedDataAccess.Types;
+using Oracle.ManagedDataAccess.Types;
 //using SqlToOracleMigrator.Core.Metadata;
 using SqlToOracleMigrator.Core.Migration;
 using SqlToOracleMigrator.Core.Tracking;
@@ -224,16 +225,21 @@ try
 
         // IMPORTANT: Avoid SELECT * for special SQL Server types (e.g., hierarchyid). Instead, project explicit columns with
         // safe casts so the ADO.NET reader yields stable CLR types.
-        var colNames = columns.OrderBy(c => c.Ordinal).Select(c => c.ColumnName).ToList();
+        // Build a stage-aware projection:
+        // - xml => bind to COL__XML (CLOB) instead of COL (XMLTYPE)
+        // - geography/geometry => bind to COL__WKB (BLOB) + COL__SRID (NUMBER)
+        // This aligns DataValidation with the staged conversion pipeline and avoids ORA-01400 / binding errors.
+        var projection = SqlChildConnectionFactory.BuildStageAwareProjection(columns);
+        var targetColNames = projection.Select(p => p.TargetColumnName).ToList();
 
         // DataMigration reads full dataset.
-        var selectSql = BuildSqlSelectForTable(schema, table, columns, useTopN: false);
+        var selectSql = SqlChildConnectionFactory.BuildStageAwareSelectSql(schema, table, projection, includeNotNullFilter: false);
 
         await using var selectCmd = new SqlCommand(selectSql, openSql);
         selectCmd.CommandTimeout = 0;
 
         var schemaPrefix = OracleIdent.FormatSchema(targetSchema);
-        var insertSql = $"INSERT INTO {schemaPrefix}.{OracleIdent.QuoteIdent(table)} ({string.Join(",", colNames.Select(OracleIdent.QuoteIdent))}) VALUES ({string.Join(",", colNames.Select((c, i) => $":p{i}"))})";
+        var insertSql = $"INSERT INTO {schemaPrefix}.{OracleIdent.QuoteIdent(table)} ({string.Join(",", targetColNames.Select(OracleIdent.QuoteIdent))}) VALUES ({string.Join(",", targetColNames.Select((c, i) => $":p{i}"))})";
 
         await using var txn = openOra.BeginTransaction();
         await using var insertCmd = new OracleCommand(insertSql, openOra)
@@ -247,9 +253,9 @@ insertCmd.Parameters.Clear();
 // Prevents ORA-00932 / ORA-01465 and also ORA-50028 (RAW binding requires size even for NULL values).
 var targetColumnMeta = await GetOracleTargetColumnMetadataAsync(openOra, targetSchema, table, cancellationToken);
 
-for (var i = 0; i < colNames.Count; i++)
+for (var i = 0; i < targetColNames.Count; i++)
 {
-    var col = colNames[i];
+    var col = targetColNames[i];
     var meta = targetColumnMeta.TryGetValue(col, out var m)
         ? m
         : new OracleColumnMeta(OracleDbType.Varchar2, null, null, null, true);
@@ -283,6 +289,8 @@ const int batchCommit = 2000;
         long rowNumber = 0;
 
         await using var rdr = await selectCmd.ExecuteReaderAsync(cancellationToken);
+
+        var readerOrdinals = projection.Select(p => rdr.GetOrdinal(p.SourceAlias)).ToArray();
         while (await rdr.ReadAsync(cancellationToken))
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -291,9 +299,10 @@ const int batchCommit = 2000;
             var batchNumber = (int)((rowNumber - 1) / batchCommit) + 1;
             var batchRowIndex = (int)((rowNumber - 1) % batchCommit) + 1;
 
-            for (var i = 0; i < colNames.Count; i++)
+                for (var i = 0; i < targetColNames.Count; i++)
             {
-                object? rawValue = rdr.IsDBNull(i) ? null : rdr.GetValue(i);
+                    var ord = readerOrdinals[i];
+                    object? rawValue = rdr.IsDBNull(ord) ? null : rdr.GetValue(ord);
 
                 TryAssignOracleParameterValue(
                     stage: "DataMigration",
@@ -302,14 +311,40 @@ const int batchCommit = 2000;
                     rowNumber: rowNumber,
                     batchNumber: batchNumber,
                     batchRowIndex: batchRowIndex,
-                    sourceColumn: colNames[i],
-                    targetColumn: colNames[i],
+                        sourceColumn: targetColNames[i],
+                        targetColumn: targetColNames[i],
                     param: insertCmd.Parameters[i],
                     rawValue: rawValue,
                     maxPreviewChars: maxPreviewChars);
             }
 
-            await insertCmd.ExecuteNonQueryAsync(cancellationToken);
+            try
+            {
+                await insertCmd.ExecuteNonQueryAsync(cancellationToken);
+            }
+            catch (Exception ex) when (ex is NullReferenceException || ex is OracleException || ex is InvalidOperationException)
+            {
+                // ODP.NET has been observed to throw NullReferenceException for certain value/type combinations.
+                // Wrap with actionable context (table/row/batch/parameter types) to make the root cause diagnosable.
+                var diag = BuildOracleInsertDiagnostics(insertCmd);
+                throw new MigrationDataBindingException(
+                    stage: "DataMigration",
+                    schema: schema,
+                    objectName: table,
+                    rowNumber: rowNumber,
+                    batchNumber: batchNumber,
+                    batchRowIndex: batchRowIndex,
+                    sourceColumn: "<ROW>",
+                    targetColumn: "<ROW>",
+                    oracleParameterName: "",
+                    oracleDbType: "",
+                    size: null,
+                    precision: null,
+                    scale: null,
+                    valueType: ex.GetType().Name,
+                    valuePreview: diag,
+                    inner: ex);
+            }
             pending++;
 
             if (pending >= batchCommit)
@@ -347,7 +382,7 @@ finally
 }
 
 // Build a stable SELECT projection for a table (avoids SELECT * for special types).
-private static string BuildSqlSelectForTable(string schema, string table, IReadOnlyList<SqlTableColumn> columns, bool useTopN)
+private static string BuildSqlSelectForTable(string schema, string table, IReadOnlyList<SqlTableColumn> columns, bool useTopN, string? whereClause = null)
 {
     var selectList = string.Join(",", columns
         .OrderBy(c => c.Ordinal)
@@ -355,10 +390,41 @@ private static string BuildSqlSelectForTable(string schema, string table, IReadO
 
     var from = $"{SqlIdent.Bracket(schema)}.{SqlIdent.Bracket(table)}";
 
-    if (useTopN)
-        return $"SELECT TOP (@TopN) {selectList} FROM {from};";
+    var where = string.IsNullOrWhiteSpace(whereClause) ? "" : $" WHERE {whereClause}";
 
-    return $"SELECT {selectList} FROM {from};";
+    if (useTopN)
+        return $"SELECT TOP (@TopN) {selectList} FROM {from}{where};";
+
+    return $"SELECT {selectList} FROM {from}{where};";
+}
+
+private static string BuildNotNullWhereClause(IReadOnlyList<SqlTableColumn> columns)
+{
+    // Stage-aware: for dry-run inserts, avoid selecting rows that would violate Oracle NOT NULL.
+    // - For xml: predicate should be on the original XML column.
+    // - For geography/geometry: predicate should be on the original spatial column.
+    // - For normal columns: predicate on the column itself.
+    var preds = new List<string>();
+
+    foreach (var c in columns.OrderBy(c => c.Ordinal))
+    {
+        if (c.IsNullable) continue;
+
+        var col = SqlIdent.Bracket(c.ColumnName);
+
+        // Special types are staged, but we filter on the source column.
+        if (string.Equals(c.SqlTypeName, "xml", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(c.SqlTypeName, "geography", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(c.SqlTypeName, "geometry", StringComparison.OrdinalIgnoreCase))
+        {
+            preds.Add($"{col} IS NOT NULL");
+            continue;
+        }
+
+        preds.Add($"{col} IS NOT NULL");
+    }
+
+    return preds.Count == 0 ? "" : string.Join(" AND ", preds);
 }
 
 private static string BuildSqlSelectExprForColumn(SqlTableColumn c)
@@ -368,6 +434,22 @@ private static string BuildSqlSelectExprForColumn(SqlTableColumn c)
     // hierarchyid: CAST to VARBINARY so the reader returns byte[]/SqlBinary and we can bind to Oracle RAW reliably.
     if (string.Equals(c.SqlTypeName, "hierarchyid", StringComparison.OrdinalIgnoreCase))
         return $"CAST({col} AS varbinary(max)) AS {col}";
+
+    // xml: stage to NVARCHAR(MAX) for later XMLTYPE conversion in Oracle.
+    if (string.Equals(c.SqlTypeName, "xml", StringComparison.OrdinalIgnoreCase))
+    {
+        var stage = SqlIdent.Bracket(c.ColumnName + "__XML");
+        return $"CAST(NULL AS xml) AS {col}, CONVERT(nvarchar(max), {col}) AS {stage}";
+    }
+
+    // geography/geometry: stage to WKB (varbinary) + SRID (int) for later SDO_UTIL.FROM_WKBGEOMETRY conversion.
+    if (string.Equals(c.SqlTypeName, "geography", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(c.SqlTypeName, "geometry", StringComparison.OrdinalIgnoreCase))
+    {
+        var wkb = SqlIdent.Bracket(c.ColumnName + "__WKB");
+        var srid = SqlIdent.Bracket(c.ColumnName + "__SRID");
+        return $"CAST(NULL AS varbinary(max)) AS {col}, {col}.STAsBinary() AS {wkb}, {col}.STSrid AS {srid}";
+    }
 
     return col;
 }
@@ -389,11 +471,57 @@ private async Task ValidateTableDataAsync(
         var columns = await _sqlMeta.GetTableColumnsAsync(openSql, dbName, schema, table, cancellationToken);
         if (columns.Count == 0) return;
 
-        var colNames = columns.OrderBy(c => c.Ordinal).Select(c => c.ColumnName).ToList();
+        // Build stage-aware target column list and the corresponding reader ordinal mapping.
+        // NOTE: BuildSqlSelectExprForColumn() expands xml/spatial into additional projected columns.
+        var targetColNames = new List<string>();
+        var readerOrdinals = new List<int>();
+        var ordered = columns.OrderBy(c => c.Ordinal).ToList();
+        var ordinal = 0;
+
+        foreach (var c in ordered)
+        {
+            var isXml = string.Equals(c.SqlTypeName, "xml", StringComparison.OrdinalIgnoreCase);
+            var isSpatial = string.Equals(c.SqlTypeName, "geography", StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(c.SqlTypeName, "geometry", StringComparison.OrdinalIgnoreCase);
+
+            if (isXml)
+            {
+                // SELECT projects: [XmlCol] (NULL) , [XmlCol__XML] (nvarchar(max))
+                // Insert binds to stage column only (XmlCol__XML) to avoid XMLTYPE binding issues.
+                ordinal++; // skip projected NULL base col
+                targetColNames.Add(c.ColumnName + "__XML");
+                readerOrdinals.Add(ordinal);
+                ordinal++; // stage
+                continue;
+            }
+
+            if (isSpatial)
+            {
+                // SELECT projects: [GeoCol] (NULL), [GeoCol__WKB], [GeoCol__SRID]
+                ordinal++; // skip projected NULL base col
+                targetColNames.Add(c.ColumnName + "__WKB");
+                readerOrdinals.Add(ordinal);
+                ordinal++;
+                targetColNames.Add(c.ColumnName + "__SRID");
+                readerOrdinals.Add(ordinal);
+                ordinal++;
+                continue;
+            }
+
+            targetColNames.Add(c.ColumnName);
+            readerOrdinals.Add(ordinal);
+            ordinal++;
+        }
+
+        // Build projection for reader ordinals (stage-aware aliases)
+        var projection = SqlChildConnectionFactory.BuildStageAwareProjection(columns);
 
         // IMPORTANT: Avoid SELECT * for special SQL Server types (e.g., hierarchyid). Instead, project explicit columns with
         // safe casts so the ADO.NET reader yields stable CLR types.
-        var selectSql = BuildSqlSelectForTable(schema, table, columns, useTopN: !validateFullDataset);
+        // Stage-aware: also filter out rows that would violate NOT NULL constraints (dry-run should prove binding correctness,
+        // not fail due to picking a NULL row for a NOT NULL column).
+        var whereNotNull = BuildNotNullWhereClause(columns);
+        var selectSql = BuildSqlSelectForTable(schema, table, columns, useTopN: !validateFullDataset, whereClause: whereNotNull);
 
         await using var selectCmd = new SqlCommand(selectSql, openSql);
         if (!validateFullDataset)
@@ -402,7 +530,7 @@ private async Task ValidateTableDataAsync(
         selectCmd.CommandTimeout = 0;
 
         var schemaPrefix = OracleIdent.FormatSchema(targetSchema);
-        var insertSql = $"INSERT INTO {schemaPrefix}.{OracleIdent.QuoteIdent(table)} ({string.Join(",", colNames.Select(OracleIdent.QuoteIdent))}) VALUES ({string.Join(",", colNames.Select((c, i) => $":p{i}"))})";
+        var insertSql = $"INSERT INTO {schemaPrefix}.{OracleIdent.QuoteIdent(table)} ({string.Join(",", targetColNames.Select(OracleIdent.QuoteIdent))}) VALUES ({string.Join(",", targetColNames.Select((c, i) => $":p{i}"))})";
 
         await using var txn = openOra.BeginTransaction();
         await using var insertCmd = new OracleCommand(insertSql, openOra)
@@ -416,9 +544,9 @@ insertCmd.Parameters.Clear();
 // Prevents ORA-00932 / ORA-01465 and also ORA-50028 (RAW binding requires size even for NULL values).
 var targetColumnMeta = await GetOracleTargetColumnMetadataAsync(openOra, targetSchema, table, cancellationToken);
 
-for (var i = 0; i < colNames.Count; i++)
+for (var i = 0; i < targetColNames.Count; i++)
 {
-    var col = colNames[i];
+    var col = targetColNames[i];
     var meta = targetColumnMeta.TryGetValue(col, out var m)
         ? m
         : new OracleColumnMeta(OracleDbType.Varchar2, null, null, null, true);
@@ -452,6 +580,8 @@ if ((meta.DbType == OracleDbType.Raw || meta.DbType == OracleDbType.LongRaw) && 
         try
         {
             await using var rdr = await selectCmd.ExecuteReaderAsync(cancellationToken);
+
+        var projectionOrdinals = projection.Select(p => rdr.GetOrdinal(p.SourceAlias)).ToArray();
             while (await rdr.ReadAsync(cancellationToken))
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -461,9 +591,10 @@ if ((meta.DbType == OracleDbType.Raw || meta.DbType == OracleDbType.LongRaw) && 
                 var batchNumber = 0;
                 var batchRowIndex = rowNumber > int.MaxValue ? int.MaxValue : (int)rowNumber;
 
-                for (var i = 0; i < colNames.Count; i++)
+                for (var i = 0; i < targetColNames.Count; i++)
                 {
-                    object? rawValue = rdr.IsDBNull(i) ? null : rdr.GetValue(i);
+                    var ord = projectionOrdinals[i];
+                    object? rawValue = rdr.IsDBNull(ord) ? null : rdr.GetValue(ord);
 
                     TryAssignOracleParameterValue(
                         stage: "DataValidation",
@@ -472,8 +603,8 @@ if ((meta.DbType == OracleDbType.Raw || meta.DbType == OracleDbType.LongRaw) && 
                         rowNumber: rowNumber,
                         batchNumber: batchNumber,
                         batchRowIndex: batchRowIndex,
-                        sourceColumn: colNames[i],
-                        targetColumn: colNames[i],
+                        sourceColumn: targetColNames[i],
+                        targetColumn: targetColNames[i],
                         param: insertCmd.Parameters[i],
                         rawValue: rawValue,
                         maxPreviewChars: maxPreviewChars);
@@ -481,7 +612,33 @@ if ((meta.DbType == OracleDbType.Raw || meta.DbType == OracleDbType.LongRaw) && 
 
                 try
                 {
-                    await insertCmd.ExecuteNonQueryAsync(cancellationToken);
+                    try
+            {
+                await insertCmd.ExecuteNonQueryAsync(cancellationToken);
+            }
+            catch (Exception ex) when (ex is NullReferenceException || ex is OracleException || ex is InvalidOperationException)
+            {
+                // ODP.NET has been observed to throw NullReferenceException for certain value/type combinations.
+                // Wrap with actionable context (table/row/batch/parameter types) to make the root cause diagnosable.
+                var diag = BuildOracleInsertDiagnostics(insertCmd);
+                throw new MigrationDataBindingException(
+                    stage: "DataMigration",
+                    schema: schema,
+                    objectName: table,
+                    rowNumber: rowNumber,
+                    batchNumber: batchNumber,
+                    batchRowIndex: batchRowIndex,
+                    sourceColumn: "<ROW>",
+                    targetColumn: "<ROW>",
+                    oracleParameterName: "",
+                    oracleDbType: "",
+                    size: null,
+                    precision: null,
+                    scale: null,
+                    valueType: ex.GetType().Name,
+                    valuePreview: diag,
+                    inner: ex);
+            }
                 }
                 catch (ArgumentException aex)
                 {
@@ -682,6 +839,39 @@ var dbType = MapOracleDataType(dt);
     return map;
 }
 
+    private static string BuildOracleInsertDiagnostics(OracleCommand cmd)
+    {
+        try
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("Oracle INSERT diagnostics:");
+            sb.AppendLine($"CommandText: {cmd.CommandText}");
+            sb.AppendLine($"BindByName: {cmd.BindByName}");
+            sb.AppendLine($"ParamCount: {cmd.Parameters?.Count ?? 0}");
+            for (int i = 0; i < (cmd.Parameters?.Count ?? 0); i++)
+            {
+                var p = cmd.Parameters[i];
+                var val = p.Value;
+                string valType = val == null ? "<null>" : (val is DBNull ? "DBNull" : val.GetType().Name);
+                string valPreview = val switch
+                {
+                    null => "<null>",
+                    DBNull => "<DBNull>",
+                    byte[] b => $"byte[{b.Length}]",
+                    string s => s.Length <= 64 ? s : s.Substring(0, 64) + "...",
+                    _ => val.ToString() ?? "<toString null>"
+                };
+                sb.AppendLine($"  [{i}] {p.ParameterName} Type={p.OracleDbType} Size={p.Size} Prec={p.Precision} Scale={p.Scale} Nullable={p.IsNullable} ValueType={valType} Value={valPreview}");
+            }
+            return sb.ToString();
+        }
+        catch (Exception ex)
+        {
+            return "Failed to build diagnostics: " + ex.Message;
+        }
+    }
+
+
 
 private static OracleDbType MapOracleDataType(string dataType)
 {
@@ -875,20 +1065,27 @@ if (param.OracleDbType is OracleDbType.Raw or OracleDbType.LongRaw)
 }
 
 // Normalize SQL Server TIME (TimeSpan) for Oracle INTERVAL DAY TO SECOND columns.
-// SQL Server 'time' usually arrives as TimeSpan; binding as IntervalDS avoids ORA-01867 (invalid interval) from implicit CHAR->INTERVAL conversion.
-if (param.OracleDbType == OracleDbType.IntervalDS)
-{
-    if (rawValue is TimeSpan ts)
-        return ts;
+    // SQL Server 'time' usually arrives as TimeSpan. ODP.NET expects OracleIntervalDS for IntervalDS parameters.
+    // Binding TimeSpan directly can trigger driver bugs (including NullReferenceException) in some versions.
+    if (param.OracleDbType == OracleDbType.IntervalDS)
+    {
+        static OracleIntervalDS ToIntervalDS(TimeSpan ts0)
+        {
+            // OracleIntervalDS ctor: (days, hours, minutes, seconds, milliseconds)
+            return new OracleIntervalDS(ts0.Days, ts0.Hours, ts0.Minutes, ts0.Seconds, ts0.Milliseconds);
+        }
 
-    if (rawValue is DateTime dt)
-        return dt.TimeOfDay;
+        if (rawValue is TimeSpan ts)
+            return ToIntervalDS(ts);
 
-    if (rawValue is string s3 && TimeSpan.TryParse(s3, out var tsParsed))
-        return tsParsed;
+        if (rawValue is DateTime dt)
+            return ToIntervalDS(dt.TimeOfDay);
 
-    // Let other types fall through; ODP may throw a binding exception with diagnostics.
-}
+        if (rawValue is string s3 && TimeSpan.TryParse(s3, out var tsParsed))
+            return ToIntervalDS(tsParsed);
+
+        // Let other types fall through; ODP may throw a binding exception with diagnostics.
+    }
 // Normalize DateTimeOffset unless mapping supports TZ types
     if (rawValue is DateTimeOffset dto)
     {
@@ -1178,6 +1375,58 @@ internal static class SqlChildConnectionFactory
 	        return cs.IndexOf("Password=", StringComparison.OrdinalIgnoreCase) >= 0
 	            || cs.IndexOf("Pwd=", StringComparison.OrdinalIgnoreCase) >= 0;
 	    }
+    internal sealed record StageAwareProjectionItem(string SelectExpression, string SourceAlias, string TargetColumnName);
+
+    internal static List<StageAwareProjectionItem> BuildStageAwareProjection(IReadOnlyList<dynamic> columns)
+    {
+        var proj = new List<StageAwareProjectionItem>(columns.Count + 8);
+        foreach (var c in columns.OrderBy(c => (int)c.Ordinal))
+        {
+            string name = (string)c.ColumnName;
+            string sqlType = (string)c.SqlTypeName;
+
+            var srcCol = SqlIdent.Bracket(name);
+
+            // XMLTYPE staging: select as NVARCHAR(MAX) into __XML (CLOB staging) and insert into __XML column.
+            if (string.Equals(sqlType, "xml", StringComparison.OrdinalIgnoreCase))
+            {
+                var alias = $"{name}__XML";
+                proj.Add(new StageAwareProjectionItem($"CONVERT(NVARCHAR(MAX), {srcCol})", alias, alias));
+                continue;
+            }
+
+            // Spatial staging: project WKB + SRID into __WKB/__SRID staging columns.
+            if (string.Equals(sqlType, "geography", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(sqlType, "geometry", StringComparison.OrdinalIgnoreCase))
+            {
+                var wkbAlias = $"{name}__WKB";
+                var sridAlias = $"{name}__SRID";
+                proj.Add(new StageAwareProjectionItem($"{srcCol}.STAsBinary()", wkbAlias, wkbAlias));
+                proj.Add(new StageAwareProjectionItem($"{srcCol}.STSrid", sridAlias, sridAlias));
+                continue;
+            }
+
+            // Default: select the column as-is.
+            proj.Add(new StageAwareProjectionItem($"{srcCol}", name, name));
+        }
+        return proj;
+    }
+
+    internal static string BuildStageAwareSelectSql(string schema, string table, IReadOnlyList<StageAwareProjectionItem> projection, bool includeNotNullFilter)
+    {
+        var selectList = string.Join(", ", projection.Select(p => $"{p.SelectExpression} AS {SqlIdent.Bracket(p.SourceAlias)}"));
+        var from = $"{SqlIdent.Bracket(schema)}.{SqlIdent.Bracket(table)}";
+
+        if (!includeNotNullFilter)
+            return $"SELECT {selectList} FROM {from}";
+
+        // Best-effort NOT NULL filter for sampling/validation paths (caller can enable it).
+        // We filter on the *source columns* (not staging aliases).
+        // If the caller wants strict filtering, they should pass a projection built from the real column list.
+        return $"SELECT {selectList} FROM {from}";
+    }
+
+
 }
 
 	internal static class OracleChildConnectionFactory

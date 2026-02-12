@@ -43,18 +43,18 @@
                             </Grid.RowDefinitions>
 
                             <TextBlock Grid.Row="0" Grid.Column="0" Text="Connection Name" VerticalAlignment="Center"/>
-                            <TextBox Grid.Row="0" Grid.Column="1" Height="28" Text="{Binding ConnectionName, UpdateSourceTrigger=PropertyChanged}"/>
+                            <TextBox Grid.Row="0" Grid.Column="1" Height="28" Text="{Binding ConnectionName, UpdateSourceTrigger=PropertyChanged}" ToolTip="Friendly name for this connection profile. Used in the Connections tree and saved to JSON under Data/Config."/>
 
                             <TextBlock Grid.Row="1" Grid.Column="0" Text="Environment" VerticalAlignment="Center" Margin="0,8,0,0"/>
                             <ComboBox Grid.Row="1" Grid.Column="1" Height="28" Margin="0,8,0,0"
-                                      ItemsSource="{Binding Environments}" SelectedItem="{Binding SelectedEnvironment}"/>
+                                      ItemsSource="{Binding Environments}" SelectedItem="{Binding SelectedEnvironment}" ToolTip="Environment label (DEV/UAT/PROD etc.). Helps organize connections and drive environment-specific behaviors/settings."/>
 
                             <TextBlock Grid.Row="2" Grid.Column="0" Text="Database Type" VerticalAlignment="Center" Margin="0,8,0,0"/>
                             <StackPanel Grid.Row="2" Grid.Column="1" Orientation="Horizontal" Margin="0,8,0,0">
                                 <RadioButton Content="SQL Server" Margin="0,0,16,0"
-                                             IsChecked="{Binding IsSqlSelected}"/>
+                                             IsChecked="{Binding IsSqlSelected}" ToolTip="Select when this connection points to a SQL Server instance (source). Host/port/user and optional default database will be used."/>
                                 <RadioButton Content="Oracle"
-                                             IsChecked="{Binding IsOracleSelected}"/>
+                                             IsChecked="{Binding IsOracleSelected}" ToolTip="Select when this connection points to Oracle (target or source). Role/SID/Service options are used to build the connect string."/>
                             </StackPanel>
 
                             <Border Grid.Row="0" Grid.Column="2" Grid.RowSpan="3" BorderBrush="#D0D0D0" BorderThickness="1" CornerRadius="4" Padding="10" Margin="10,0,0,0">
@@ -83,26 +83,26 @@
                             </Grid.RowDefinitions>
 
                             <TextBlock Grid.Row="0" Grid.Column="0" Text="Hostname" VerticalAlignment="Center"/>
-                            <TextBox Grid.Row="0" Grid.Column="1" Height="28" Text="{Binding Hostname, UpdateSourceTrigger=PropertyChanged}"/>
+                            <TextBox Grid.Row="0" Grid.Column="1" Height="28" Text="{Binding Hostname, UpdateSourceTrigger=PropertyChanged}" ToolTip="SQL Server host name or IP address. Example: myserver.company.com"/>
 
                             <TextBlock Grid.Row="1" Grid.Column="0" Text="Port" VerticalAlignment="Center" Margin="0,8,0,0"/>
-                            <TextBox Grid.Row="1" Grid.Column="1" Height="28" Margin="0,8,0,0" Text="{Binding Port, UpdateSourceTrigger=PropertyChanged}"/>
+                            <TextBox Grid.Row="1" Grid.Column="1" Height="28" Margin="0,8,0,0" Text="{Binding Port, UpdateSourceTrigger=PropertyChanged}" ToolTip="SQL Server port (default is typically 1433). Change only if your instance is configured on a non-default port."/>
 
                             <TextBlock Grid.Row="2" Grid.Column="0" Text="Username" VerticalAlignment="Center" Margin="0,8,0,0"/>
-                            <TextBox Grid.Row="2" Grid.Column="1" Height="28" Margin="0,8,0,0" Text="{Binding Username, UpdateSourceTrigger=PropertyChanged}"/>
+                            <TextBox Grid.Row="2" Grid.Column="1" Height="28" Margin="0,8,0,0" Text="{Binding Username, UpdateSourceTrigger=PropertyChanged}" ToolTip="SQL login username (ignored if Windows Authentication is enabled)."/>
 
                             <TextBlock Grid.Row="3" Grid.Column="0" Text="Password" VerticalAlignment="Center" Margin="0,8,0,0"/>
-                            <PasswordBox Grid.Row="3" Grid.Column="1" Height="28" Margin="0,8,0,0" x:Name="SqlPwd"/>
+                            <PasswordBox Grid.Row="3" Grid.Column="1" Height="28" Margin="0,8,0,0" x:Name="SqlPwd" ToolTip="SQL login password. Only required when Windows Authentication is OFF."/>
 
                             <StackPanel Grid.Row="4" Grid.Column="1" Orientation="Horizontal" Margin="0,8,0,0">
-                                <CheckBox Content="Use Windows Authentication" IsChecked="{Binding UseWindowsAuth}" Margin="0,0,16,0"/>
-                                <CheckBox Content="Save Password (Encrypted)" IsChecked="{Binding SavePassword}"/>
+                                <CheckBox Content="Use Windows Authentication" IsChecked="{Binding UseWindowsAuth}" Margin="0,0,16,0" ToolTip="Use Integrated Security (SSPI). When enabled, Username/Password are not used."/>
+                                <CheckBox Content="Save Password (Encrypted)" IsChecked="{Binding SavePassword}" ToolTip="Persist the password securely so you can reconnect without retyping. Uses the tool’s local encryption mechanism."/>
                             </StackPanel>
 
                             <TextBlock Grid.Row="5" Grid.Column="0" Text="Default Database (optional)" VerticalAlignment="Center" Margin="0,8,0,0"/>
                             <StackPanel Grid.Row="5" Grid.Column="1" Orientation="Horizontal" Margin="0,8,0,0">
-                                <ComboBox Width="260" Height="28" ItemsSource="{Binding DatabaseOptions}" SelectedItem="{Binding DefaultDatabase}"/>
-                                <Button Content="Retrieve" Margin="8,0,0,0" Padding="10,2" Click="Retrieve_Click"/>
+                                <ComboBox Width="260" Height="28" ItemsSource="{Binding DatabaseOptions}" SelectedItem="{Binding DefaultDatabase}" ToolTip="Optional default database to connect to. Use Retrieve to populate this list after host/login details are entered."/>
+                                <Button Content="Retrieve" Margin="8,0,0,0" Padding="10,2" Click="Retrieve_Click" ToolTip="Fetch available databases from the SQL Server using the provided credentials. Requires connectivity and permissions."/>
                             </StackPanel>
                         </Grid>
                     </GroupBox>
@@ -128,15 +128,15 @@
 
                             <TextBlock Grid.Row="0" Grid.Column="0" Text="Authentication Type" VerticalAlignment="Center"/>
                             <ComboBox Grid.Row="0" Grid.Column="1" Height="28"
-                                      ItemsSource="{Binding AuthTypeOptions}" SelectedItem="{Binding AuthenticationType}"/>
+                                      ItemsSource="{Binding AuthTypeOptions}" SelectedItem="{Binding AuthenticationType}" ToolTip="Authentication method for Oracle. Choose password-based for standard accounts; use the option required by your environment."/>
 
                             <TextBlock Grid.Row="1" Grid.Column="0" Text="Connection Type" VerticalAlignment="Center" Margin="0,8,0,0"/>
                             <ComboBox Grid.Row="1" Grid.Column="1" Height="28" Margin="0,8,0,0"
-                                      ItemsSource="{Binding ConnectionTypeOptions}" SelectedItem="{Binding ConnectionType}"/>
+                                      ItemsSource="{Binding ConnectionTypeOptions}" SelectedItem="{Binding ConnectionType}" ToolTip="Choose how to address Oracle: direct host+service, or other supported formats. Impacts the generated connect descriptor."/>
 
                             <TextBlock Grid.Row="2" Grid.Column="0" Text="Role" VerticalAlignment="Center" Margin="0,8,0,0"/>
                             <ComboBox Grid.Row="2" Grid.Column="1" Height="28" Margin="0,8,0,0"
-                                      ItemsSource="{Binding RoleOptions}" SelectedItem="{Binding Role}"/>
+                                      ItemsSource="{Binding RoleOptions}" SelectedItem="{Binding Role}" ToolTip="Oracle role used for connection (e.g., Normal, SYSDBA). SYS/SYSDBA is required for PDB create/drop operations."/>
 
                             <TextBlock Grid.Row="3" Grid.Column="0" Text="Hostname" VerticalAlignment="Center" Margin="0,8,0,0"/>
                             <TextBox Grid.Row="3" Grid.Column="1" Height="28" Margin="0,8,0,0" Text="{Binding Hostname, UpdateSourceTrigger=PropertyChanged}"/>
@@ -148,13 +148,13 @@
                             <TextBox Grid.Row="5" Grid.Column="1" Height="28" Margin="0,8,0,0" Text="{Binding Username, UpdateSourceTrigger=PropertyChanged}"/>
 
                             <TextBlock Grid.Row="6" Grid.Column="0" Text="Password" VerticalAlignment="Center" Margin="0,8,0,0"/>
-                            <PasswordBox Grid.Row="6" Grid.Column="1" Height="28" Margin="0,8,0,0" x:Name="OraPwd"/>
+                            <PasswordBox Grid.Row="6" Grid.Column="1" Height="28" Margin="0,8,0,0" x:Name="OraPwd" ToolTip="Oracle user password. Required for password-based authentication."/>
 
                             <StackPanel Grid.Row="7" Grid.Column="1" Orientation="Horizontal" Margin="0,8,0,0">
-                                <RadioButton Content="SID" IsChecked="{Binding UseSid}" Margin="0,0,10,0"/>
-                                <TextBox Width="160" Height="28" Text="{Binding Sid, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,16,0"/>
-                                <RadioButton Content="Service Name" IsChecked="{Binding UseServiceName}" Margin="0,0,10,0"/>
-                                <TextBox Width="200" Height="28" Text="{Binding ServiceName, UpdateSourceTrigger=PropertyChanged}"/>
+                                <RadioButton Content="SID" IsChecked="{Binding UseSid}" Margin="0,0,10,0" ToolTip="Use this when connecting via SID (legacy). Enter the SID value in the adjacent box."/>
+                                <TextBox Width="160" Height="28" Text="{Binding Sid, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,16,0" ToolTip="Oracle SID value. Used only when SID connection type is selected."/>
+                                <RadioButton Content="Service Name" IsChecked="{Binding UseServiceName}" Margin="0,0,10,0" ToolTip="Use this when connecting via SERVICE_NAME (recommended for most modern Oracle setups)."/>
+                                <TextBox Width="200" Height="28" Text="{Binding ServiceName, UpdateSourceTrigger=PropertyChanged}" ToolTip="Oracle service name (SERVICE_NAME). Example: ORCLPDB1 or a service configured by your DBA."/>
                             </StackPanel>
 
                             <StackPanel Grid.Row="8" Grid.Column="1" Orientation="Horizontal" Margin="0,8,0,0">
@@ -174,10 +174,10 @@
 
         <!-- Footer -->
         <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
-            <Button Content="Test" Width="100" Margin="0,0,8,0" Click="Test_Click"/>
-            <Button Content="Save" Width="100" Margin="0,0,8,0" Click="Save_Click"/>
-            <Button Content="Clear" Width="100" Margin="0,0,8,0" Click="Clear_Click"/>
-            <Button Content="Cancel" Width="100" Click="Cancel_Click"/>
+            <Button Content="Test" Width="100" Margin="0,0,8,0" Click="Test_Click" ToolTip="Test the connection with the current settings. Use this before Save to verify host/credentials/role/service are correct."/>
+            <Button Content="Save" Width="100" Margin="0,0,8,0" Click="Save_Click" ToolTip="Save this connection profile to JSON and make it available in the Connections tree."/>
+            <Button Content="Clear" Width="100" Margin="0,0,8,0" Click="Clear_Click" ToolTip="Clear all fields and reset the wizard inputs."/>
+            <Button Content="Cancel" Width="100" Click="Cancel_Click" ToolTip="Close without saving any changes."/>
         </StackPanel>
     </Grid>
 </Window>

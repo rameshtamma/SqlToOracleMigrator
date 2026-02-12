@@ -50,31 +50,50 @@ public sealed partial class MigrationEngine
 
             try
             {
-                if (ctx.Request.CreateDependentObjects)
+                // IMPORTANT (Root Fix): Types + Sequences are prerequisites for table DDL.
+                // Oracle resolves DEFAULT <schema>.<seq>.NEXTVAL at parse time, so sequences must exist
+                // BEFORE any CREATE TABLE that references them. Likewise, some tables depend on UDTs.
+                // Therefore, these are NOT governed by CreateDependentObjects (which controls views/procs/etc.).
+
+                // 1) Types (UDT) - some tables may depend on UDTs
+                foreach (var t in ctx.UserDefinedTypes)
                 {
-                    // 1) Types (UDT) - some tables may depend on UDTs
-                    foreach (var t in ctx.UserDefinedTypes)
-                    {
-                        var schema = t.Schema;
-                        var name = t.Name;
-                        var baseType = t.UnderlyingType;
-                        await RunOneAsync(schema, name, "TYPE", async () =>
-                            await ctx.Engine.DeployUserDefinedTypeAsync(ctx.OpenSql, ctx.OpenOra, ctx.Request.SourceDatabase, schema, name, baseType, ctx.GetTargetSchema(schema), ctx.Request.CreateDependentObjectStubs, ctx.RunDir, ct));
-                    }
-
-                    // 2) Sequences - tables may use them in DEFAULT expressions
-                    foreach (var s in ctx.Sequences)
-                    {
-                        var schema = s.Schema;
-                        var name = s.Name;
-                        await RunOneAsync(schema, name, "SEQUENCE", async () =>
-                            await ctx.Engine.DeploySequenceAsync(ctx.OpenSql, ctx.OpenOra, ctx.Request.SourceDatabase, schema, name, ctx.GetTargetSchema(schema), ct));
-                    }
-
-                    // After deploying sequences, grant SELECT on cross-schema sequences to all other schemas.
-                    // This is required for DEFAULT <schema>.<seq>.NEXTVAL and for cross-schema references in code.
-                    await ctx.Engine.GrantSequenceUsageAcrossSchemasAsync(ctx.OpenOra, ctx, ct);
+                    var schema = t.Schema;
+                    var name = t.Name;
+                    var baseType = t.UnderlyingType;
+                    await RunOneAsync(schema, name, "TYPE", async () =>
+                        await ctx.Engine.DeployUserDefinedTypeAsync(
+                            ctx.OpenSql,
+                            ctx.OpenOra,
+                            ctx.Request.SourceDatabase,
+                            schema,
+                            name,
+                            baseType,
+                            ctx.GetTargetSchema(schema),
+                            ctx.Request.CreateDependentObjectStubs,
+                            ctx.RunDir,
+                            ct));
                 }
+
+                // 2) Sequences - tables may use them in DEFAULT expressions
+                foreach (var s in ctx.Sequences)
+                {
+                    var schema = s.Schema;
+                    var name = s.Name;
+                    await RunOneAsync(schema, name, "SEQUENCE", async () =>
+                        await ctx.Engine.DeploySequenceAsync(
+                            ctx.OpenSql,
+                            ctx.OpenOra,
+                            ctx.Request.SourceDatabase,
+                            schema,
+                            name,
+                            ctx.GetTargetSchema(schema),
+                            ct));
+                }
+
+                // After deploying sequences, grant SELECT on cross-schema sequences to all other schemas.
+                // This is required for DEFAULT <schema>.<seq>.NEXTVAL and for cross-schema references in code.
+                await ctx.Engine.GrantSequenceUsageAcrossSchemasAsync(ctx.OpenOra, ctx, ct);
 
                 // Tables (with PK/UQ/Indexes) - run after sequences so DEFAULT ...NEXTVAL parses/executes cleanly.
                 foreach (var t in ctx.Tables)

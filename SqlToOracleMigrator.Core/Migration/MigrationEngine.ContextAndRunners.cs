@@ -4,6 +4,7 @@ using Oracle.ManagedDataAccess.Types;
 using SqlToOracleMigrator.Core.Migration;
 using SqlToOracleMigrator.Core.Tracking;
 using System.Collections.Concurrent;
+using System.Linq;
 using System.Text;
 using System.Text.Json;
 using System.Security.Cryptography;
@@ -46,17 +47,34 @@ public sealed partial class MigrationEngine
         Task RunAsync(MigrationContext ctx, CancellationToken ct);
     }
 
-    private List<IMigrationStageRunner> BuildStageRunners(MigrationContext ctx) => new()
+        private List<IMigrationStageRunner> BuildStageRunners(MigrationContext ctx)
     {
-        new DiscoveryPlanningRunner(),
-        new SchemaProvisioningRunner(),
-        new DataDefValidationRunner(),
-        new DdlGenerationRunner(),
-        new DataValidationRunner(),
-        new DataMigrationRunner(),
-        new PostValidationRunner(),
-        new FinalizationRunner()
-    };
+        // v1.1: 10-stage pipeline. For backwards compatibility, we delegate to existing runner implementations where possible.
+        var all = new List<IMigrationStageRunner>
+        {
+            new ConnectionFingerprintingRunner(),
+            new DeepDiscoveryRunner(),
+            new PlanningTopologicalGraphRunner(),
+            new ProvisioningRunner(),
+            new DdlGenerationDryRunRunner(),
+            new DeploymentSkeletonRunner(),
+            new DataStrategySamplingRunner(),
+            new ParallelDataMigrationRunner(),
+            new PostLoadEnforcementRunner(),
+            new FinalVerificationRunner()
+        };
+
+        // Plan option controls which stages are included; completed stages are skipped by the engine based on ToolMig.
+        return ctx.Request.PlanOption switch
+        {
+            MigrationPlanOption.Feasibility => all.Where(r => r.Stage is MigrationStage.ConnectionFingerprinting or MigrationStage.DeepDiscovery or MigrationStage.PlanningTopologicalGraph).ToList(),
+            MigrationPlanOption.DdlValidation => all.Where(r => r.Stage is MigrationStage.ConnectionFingerprinting or MigrationStage.DeepDiscovery or MigrationStage.PlanningTopologicalGraph or MigrationStage.Provisioning or MigrationStage.DdlGenerationDryRun or MigrationStage.DeploymentSkeleton).ToList(),
+            MigrationPlanOption.DataValidation => all.Where(r => r.Stage is MigrationStage.ConnectionFingerprinting or MigrationStage.DeepDiscovery or MigrationStage.PlanningTopologicalGraph or MigrationStage.Provisioning or MigrationStage.DdlGenerationDryRun or MigrationStage.DeploymentSkeleton or MigrationStage.DataStrategySampling).ToList(),
+            MigrationPlanOption.Migrate => all, // full pipeline but skip completed stages
+            MigrationPlanOption.FullMigration => all,
+            _ => all
+        };
+    }
 
     internal sealed class MigrationRunSummary
     {

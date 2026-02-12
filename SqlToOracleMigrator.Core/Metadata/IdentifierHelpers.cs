@@ -1,3 +1,8 @@
+using System;
+using System.Linq;
+using System.Text;
+using System.Security.Cryptography;
+
 namespace SqlToOracleMigrator.Core;
 
 public static class SqlIdent

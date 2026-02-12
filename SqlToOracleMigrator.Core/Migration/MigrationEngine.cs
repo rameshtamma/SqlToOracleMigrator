@@ -47,6 +47,9 @@ public sealed partial class MigrationEngine
     {
         if (request is null) throw new ArgumentNullException(nameof(request));
 
+        // v1.1: provide request settings to internal helpers (e.g., OracleBulkCopy options).
+        SetRequestAccessor(() => request);
+
         var dop = Math.Clamp(request.DegreeOfParallelism, 1, 32);
         var stageMode = request.ErrorHandlingMode;
 

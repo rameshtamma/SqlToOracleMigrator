@@ -31,6 +31,14 @@ public sealed partial class MigrationEngine
             await EnsureInTargetPdbAsync(ctx, ct);
 
 
+            // v1.1 Stage 9: Convert staged spatial/XML BEFORE applying constraints/indexes.
+            if (ctx.Request.RunStage9ConversionBeforeConstraintsAndIndexes)
+            {
+                ctx.Engine.Raise(MigrationStage.PostValidation, "Converting staged spatial/XML before enforcement...");
+                ctx.AppendLog("[PostValidation] Converting staged spatial/XML before enforcement...");
+                await ctx.Engine.ConvertSpatialAndXmlAsync(ctx, ct);
+            }
+
             ctx.Engine.Raise(MigrationStage.PostValidation, "Running basic row-count validation (first 50 tables)...");
             ctx.AppendLog("[PostValidation] Starting row-count validation (first 50 tables)...");
             await ctx.ToolMigStageAsync(MigrationStage.PostValidation, "InProgress", "Row-count validation", 0);
@@ -79,6 +87,10 @@ public sealed partial class MigrationEngine
                     if (ctx.StageMode == ErrorHandlingMode.FailFast) throw;
                 }
             }
+            
+            // v1.1: default stats gather (best effort)
+            await ctx.Engine.GatherSchemaStatsAsync(ctx, ct);
+
             // Deep validation (inventory + PK/invalid checks + optional row counts)
             ctx.Engine.Raise(MigrationStage.PostValidation, "Running post-migration inventory validation (objects/keys/invalid)...");
             ctx.AppendLog("[PostValidation] Running deep validation (objects/keys/invalid)...");

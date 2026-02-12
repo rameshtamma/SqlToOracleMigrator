@@ -16,7 +16,21 @@ public sealed partial class MigrationEngine
     {
         public MigrationStage Stage => MigrationStage.DataDefValidation;
 
-        public async Task RunAsync(MigrationContext ctx, CancellationToken ct)
+        
+        private static string SuppressSequenceDefaultsForValidation(string ddl)
+        {
+            if (string.IsNullOrWhiteSpace(ddl)) return ddl;
+
+            // Oracle validates referenced sequences during parse; in a "parse-only" stage we may not have created sequences yet.
+            // To keep this stage non-invasive (no CREATE SEQUENCE side-effects), we strip sequence-based DEFAULT clauses.
+	            // Example: DEFAULT Sequences.CityID.NEXTVAL  -> <removed>
+	            // NOTE: This pattern supports both unquoted and quoted identifiers.
+	            // In a verbatim string literal, a quote is escaped by doubling it.
+	            var pattern = @"\s+DEFAULT\s+(?:\w+|""[^""]+"")\.(?:\w+|""[^""]+"")\.NEXTVAL";
+	            return System.Text.RegularExpressions.Regex.Replace(ddl, pattern, string.Empty, System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        }
+
+public async Task RunAsync(MigrationContext ctx, CancellationToken ct)
         {
             if (!ctx.Request.EnableDataDefValidation)
                 return;
@@ -54,6 +68,7 @@ public sealed partial class MigrationEngine
                     {
                         var columns = await ctx.Engine._sqlMeta.GetTableColumnsAsync(ctx.OpenSql, ctx.Request.SourceDatabase, t.Schema, t.Table, ct);
                         ddlForDiagnostics = OracleDdlGenerator.CreateTableDdl(ctx.GetTargetSchema(t.Schema), t.Table, columns, ctx.Engine._typeMapper);
+                        ddlForDiagnostics = SuppressSequenceDefaultsForValidation(ddlForDiagnostics);
                         await ctx.Engine._oraMeta.ValidateDdlAsync(ctx.OpenOra, ddlForDiagnostics, ct);
                         await ctx.ToolMigObjectAsync(MigrationStage.DataDefValidation, t.Schema, t.Table, "TABLE", "Completed", null, null);
                     }

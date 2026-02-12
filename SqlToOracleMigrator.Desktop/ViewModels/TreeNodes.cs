@@ -13,13 +13,7 @@ public abstract class TreeNodeViewModel : NotifyBase
     public ObservableCollection<TreeNodeViewModel> Children { get; } = new();
 }
 
-public sealed class TreeGroupNodeViewModel : TreeNodeViewModel
-{
-    public TreeGroupNodeViewModel(string name)
-    {
-        DisplayName = name;
-    }
-}
+
 
 public sealed class ConnectionNodeViewModel : TreeNodeViewModel
 {

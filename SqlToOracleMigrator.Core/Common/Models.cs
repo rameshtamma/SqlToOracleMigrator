@@ -254,5 +254,86 @@ public sealed class MigrationRequest
     /// </summary>
     public bool ForeignKeysEnableNoValidate { get; init; } = true;
 
+
+    // ----------------------------
+    // v1.1 upgrades (2026-02)
+    // ----------------------------
+
+    public MigrationPlanOption PlanOption { get; init; } = MigrationPlanOption.Migrate;
+
+    /// <summary>
+    /// When true, prefer connecting directly to the PDB service; if false and AllowCdbConnectionFallback=true,
+    /// engine may ALTER SESSION SET CONTAINER to TargetPdbName.
+    /// </summary>
+    public bool RequireDirectPdbConnection { get; init; } = true;
+
+    /// <summary>
+    /// Allow connecting to CDB and switching container via ALTER SESSION SET CONTAINER = TargetPdbName.
+    /// Only used when RequireDirectPdbConnection=false.
+    /// </summary>
+    public bool AllowCdbConnectionFallback { get; init; } = false;
+
+    /// <summary>
+    /// Use OracleBulkCopy for data migration (default true).
+    /// </summary>
+    public bool UseOracleBulkCopy { get; init; } = true;
+
+    /// <summary>
+    /// OracleBulkCopy batch size.
+    /// </summary>
+    public int BulkCopyBatchSize { get; init; } = 5000;
+
+    /// <summary>
+    /// OracleBulkCopy timeout seconds (0 = infinite).
+    /// </summary>
+    public int BulkCopyTimeoutSeconds { get; init; } = 0;
+
+    /// <summary>
+    /// Use internal transaction per batch for OracleBulkCopy (safer).
+    /// </summary>
+    public bool BulkCopyUseInternalTransaction { get; init; } = true;
+
+    /// <summary>
+    /// Enable staging columns for spatial/XML, and convert post-load.
+    /// </summary>
+    public bool EnableSpatialXmlStaging { get; init; } = true;
+
+    /// <summary>
+    /// Option 3: keep staging columns only if conversion fails.
+    /// </summary>
+    public bool KeepStagingColumnsOnlyOnFailure { get; init; } = true;
+
+    /// <summary>
+    /// Stage 9: run conversion before constraints/indexes.
+    /// </summary>
+    public bool RunStage9ConversionBeforeConstraintsAndIndexes { get; init; } = true;
+
+    /// <summary>
+    /// Default TRUE: gather schema stats after post-load enforcement.
+    /// </summary>
+    public bool GatherSchemaStats { get; init; } = true;
+
+    /// <summary>
+    /// Always auto-create Oracle roles and apply object grants to roles.
+    /// </summary>
+    public SecurityGrantMode SecurityGrantMode { get; init; } = SecurityGrantMode.AutoApplyRolesAndObjectGrants;
+
+    /// <summary>
+    /// Grant roles only to existing users (no user creation). Fail Stage 10 if expected users missing.
+    /// </summary>
+    public bool StrictFailOnMissingSecurityUsers { get; init; } = true;
+
+    /// <summary>
+    /// When true, treat AD groups / external principals as script-only and do not fail final stage.
+    /// </summary>
+    public bool DoNotFailOnMissingAdExternalPrincipals { get; init; } = true;
+
+    /// <summary>
+    /// Enforce filegroup->tablespace mapping in Preflight. Fail if tablespace missing.
+    /// </summary>
+    public bool EnforceTablespaceMapping { get; init; } = true;
+
+    public string TablespaceMappingFile { get; init; } = "Data/Config/tablespace_mappings.json";
+
 }
 

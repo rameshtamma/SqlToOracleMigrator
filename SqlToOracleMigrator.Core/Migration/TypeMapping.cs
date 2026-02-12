@@ -81,7 +81,25 @@ public sealed class SqlToOracleTypeMapper
 }
 public static class OracleDdlGenerator
 {
+    /// <summary>
+    /// Generates Oracle CREATE TABLE DDL.
+    ///
+    /// v1.1 staging behavior:
+    /// - For SQL Server XML, create a staging CLOB column (COL__XML) and keep the final XMLTYPE column nullable during load/validation.
+    /// - For SQL Server geography/geometry, create staging columns (COL__WKB BLOB, COL__SRID NUMBER) and keep the final SDO_GEOMETRY column nullable during load/validation.
+    ///
+    /// NOT NULL enforcement for these special columns should be applied post-conversion (Stage 9/10) after data has been converted.
+    /// This avoids ORA-01400 during Stage 8 DataValidation dry-runs and during bulk loads.
+    /// </summary>
     public static string CreateTableDdl(string targetSchema, string tableName, IReadOnlyList<SqlTableColumn> columns, SqlToOracleTypeMapper mapper)
+        => CreateTableDdl(targetSchema, tableName, columns, mapper, enableSpatialXmlStaging: true);
+
+    public static string CreateTableDdl(
+        string targetSchema,
+        string tableName,
+        IReadOnlyList<SqlTableColumn> columns,
+        SqlToOracleTypeMapper mapper,
+        bool enableSpatialXmlStaging)
     {
         if (string.IsNullOrWhiteSpace(targetSchema)) throw new ArgumentNullException(nameof(targetSchema));
         if (string.IsNullOrWhiteSpace(tableName)) throw new ArgumentNullException(nameof(tableName));
@@ -92,17 +110,43 @@ public static class OracleDdlGenerator
         var schemaQ = OracleIdent.FormatSchema(targetSchema);
         var tableQ = OracleIdent.QuoteIdent(tableName);
 
-        var colLines = columns
-            .OrderBy(c => c.Ordinal)
-            .Select(c =>
+        var colLines = new List<string>();
+
+        foreach (var c in columns.OrderBy(c => c.Ordinal))
+        {
+            var colQ = OracleIdent.QuoteIdent(c.ColumnName);
+            var oracleType = mapper.Map(c.SqlTypeName, c.MaxLength, c.Precision, c.Scale);
+            var def = OracleDefaultConverter.Convert(c.DefaultDefinition, targetSchema);
+            var defClause = string.IsNullOrWhiteSpace(def) ? "" : $" DEFAULT {def}";
+
+            var isXml = string.Equals(c.SqlTypeName, "xml", StringComparison.OrdinalIgnoreCase);
+            var isSpatial = string.Equals(c.SqlTypeName, "geography", StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(c.SqlTypeName, "geometry", StringComparison.OrdinalIgnoreCase);
+
+            // For special staged columns, keep the final column nullable during load/validation.
+            // Enforce NOT NULL later after Stage 9 conversion.
+            var finalNullable = (enableSpatialXmlStaging && (isXml || isSpatial))
+                ? "" // force nullable
+                : (c.IsNullable ? "" : " NOT NULL");
+
+            colLines.Add($"{colQ} {oracleType}{defClause}{finalNullable}");
+
+            if (!enableSpatialXmlStaging)
+                continue;
+
+            // Add staging columns (nullable) for conversion pipeline.
+            if (isXml)
             {
-                var colQ = OracleIdent.QuoteIdent(c.ColumnName);
-                var oracleType = mapper.Map(c.SqlTypeName, c.MaxLength, c.Precision, c.Scale);
-                var def = OracleDefaultConverter.Convert(c.DefaultDefinition);
-                var defClause = string.IsNullOrWhiteSpace(def) ? "" : $" DEFAULT {def}";
-                var nullable = c.IsNullable ? "" : " NOT NULL";
-                return $"{colQ} {oracleType}{defClause}{nullable}";
-            });
+                // XMLTYPE conversion source is a CLOB holding XML text.
+                colLines.Add($"{OracleIdent.QuoteIdent(c.ColumnName + "__XML")} CLOB");
+            }
+            else if (isSpatial)
+            {
+                // WKB blob + SRID used to create SDO_GEOMETRY in Stage 9.
+                colLines.Add($"{OracleIdent.QuoteIdent(c.ColumnName + "__WKB")} BLOB");
+                colLines.Add($"{OracleIdent.QuoteIdent(c.ColumnName + "__SRID")} NUMBER(10)");
+            }
+        }
 
         return $"CREATE TABLE {schemaQ}.{tableQ} (\n  {string.Join(",\n  ", colLines)}\n)";
     }
@@ -113,8 +157,10 @@ internal static class OracleDefaultConverter
 {
     // Converts SQL Server DEFAULT definitions into Oracle-compatible DEFAULT expressions.
     // Goal: preserve intent while staying within Oracle DEFAULT-expression constraints.
-    public static string? Convert(string? sqlDefaultDefinition)
+    public static string? Convert(string? sqlDefaultDefinition, string targetSchema)
     {
+        if (string.IsNullOrWhiteSpace(targetSchema)) throw new ArgumentNullException(nameof(targetSchema));
+
         if (string.IsNullOrWhiteSpace(sqlDefaultDefinition)) return null;
 
         // SQL Server default constraints are commonly wrapped in parentheses (sometimes multiple levels).
@@ -153,7 +199,7 @@ internal static class OracleDefaultConverter
             return "SYS_GUID()";
 
         // SQL Server sequences: NEXT VALUE FOR schema.sequence -> schema.sequence.NEXTVAL
-        var nextVal = TryConvertNextValueFor(s);
+        var nextVal = TryConvertNextValueFor(s, targetSchema);
         if (!string.IsNullOrWhiteSpace(nextVal))
             return nextVal;
 
@@ -220,7 +266,7 @@ internal static class OracleDefaultConverter
         return s;
     }
 
-    private static string? TryConvertNextValueFor(string s)
+    private static string? TryConvertNextValueFor(string s, string targetSchema)
     {
         // Accept forms:
         // NEXT VALUE FOR schema.sequence
@@ -235,7 +281,14 @@ internal static class OracleDefaultConverter
         var ident = new string(after.TakeWhile(ch => char.IsLetterOrDigit(ch) || ch == '_' || ch == '.').ToArray());
         if (string.IsNullOrWhiteSpace(ident)) return null;
 
-        return $"{ident}.NEXTVAL";
+        var parts = ident.Split('.', 2);
+
+        // SQL Server often uses schema "Sequences" for sequence objects (e.g., WideWorldImporters).
+        // In Oracle we deploy sequences into the selected target schema and reference them explicitly with quoting
+        // so the identifier matches the CREATE SEQUENCE statement (which uses quoted identifiers).
+        var seqName = parts.Length == 2 ? parts[1] : parts[0];
+        var schemaRef = OracleIdent.FormatSchema(targetSchema);
+        return $"{schemaRef}.{OracleIdent.QuoteIdent(seqName)}.NEXTVAL";
     }
 
     private static string? ExtractParenInner(string s, string funcName)
