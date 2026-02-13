@@ -16,8 +16,21 @@ public sealed partial class MigrationEngine
         await using var selectCmd = new SqlCommand(selectSql, openSql) { CommandTimeout = 0 };
         await using var reader = await selectCmd.ExecuteReaderAsync(ct);
 
+        var preferUnquotedUpper = _requestAccessor?.Invoke()?.UseUnquotedUppercaseIdentifiers ?? true;
         var schemaPrefix = OracleIdent.FormatSchema(targetSchema);
-        var destTable = $"{schemaPrefix}.{OracleIdent.QuoteIdent(table)}";
+
+        // OracleBulkCopy internally validates DestinationTableName using DBMS_ASSERT. In many environments this
+        // uses SIMPLE_SQL_NAME semantics, which rejects dots and quoted identifiers (causing ORA-44003).
+        // When preferUnquotedUpper is enabled, we set CURRENT_SCHEMA and pass only the unqualified table name.
+        var destTable = preferUnquotedUpper
+            ? OracleIdent.FormatObject(table, preferUnquotedUpper)
+            : $"{schemaPrefix}.{OracleIdent.QuoteIdent(table)}";
+
+        if (preferUnquotedUpper)
+        {
+            await using var setSchema = new OracleCommand($"ALTER SESSION SET CURRENT_SCHEMA = {schemaPrefix}", openOra);
+            await setSchema.ExecuteNonQueryAsync(ct);
+        }
 
         var opts = ctxBulkCopyOptions();
         using var bulk = new OracleBulkCopy(openOra, opts)
@@ -41,8 +54,27 @@ public sealed partial class MigrationEngine
         {
             bulk.ColumnMappings.Add(i, i);
         }
+        try
+        {
+            bulk.WriteToServer(reader);
+        }
+        catch (OracleException ex) when (ex.Number == 44003)
+        {
+            _logger?.Warn($"BulkCopy rejected destination table name '{(preferUnquotedUpper ? destTable : destTable)}' (ORA-44003). Falling back to stage-aware inserts using a fresh Oracle connection. {ex.Message}");
 
-        bulk.WriteToServer(reader);
+            // IMPORTANT: do NOT use openOra.ConnectionString here because ODP.NET can strip the Password
+            // from ConnectionString after Open() unless Persist Security Info=true, which leads to ORA-01005.
+            var req = _requestAccessor?.Invoke();
+            var fallbackConnStr = req is null
+                ? openOra.ConnectionString
+                : ConnectionStringBuilders.BuildOracle(req.TargetOracleConnection);
+
+            await using var fallbackOra = new OracleConnection(fallbackConnStr);
+            await fallbackOra.OpenAsync(ct);
+
+            await CopyTableAsync(openSql, fallbackOra, dbName, schema, table, targetSchema, ct);
+            return;
+        }
 
         OracleBulkCopyOptions ctxBulkCopyOptions()
         {

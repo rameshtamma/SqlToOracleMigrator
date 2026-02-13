@@ -101,7 +101,7 @@ public sealed partial class MigrationEngine
                     var schema = t.Schema;
                     var name = t.Table;
                     await RunOneAsync(schema, name, "TABLE", async () =>
-                        await ctx.Engine.DeployTableAsync(ctx.OpenSql, ctx.OpenOra, ctx.Request.SourceDatabase, schema, name, ctx.GetTargetSchema(schema), ct));
+                        await ctx.Engine.DeployTableAsync(ctx.OpenSql, ctx.OpenOra, ctx.Request.SourceDatabase, schema, name, ctx.GetTargetSchema(schema), ctx.Request.EnableSpatialXmlStaging, ct));
                 }
 
                 if (ctx.Request.CreateDependentObjects)

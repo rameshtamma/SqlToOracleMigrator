@@ -8,6 +8,7 @@ using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using System.Security.Cryptography;
+using System.Collections.Generic;
 
 namespace SqlToOracleMigrator.Core;
 
@@ -30,20 +31,28 @@ public sealed partial class MigrationEngine
             // during resume, every object lookup/DDL will fail with ORA-00942 because the tables exist only in the PDB.
             await EnsureInTargetPdbAsync(ctx, ct);
 
+            // Collect all stage errors here so we can produce a single stage report.
+            var errors = new List<StageError>();
+
+
 
             // v1.1 Stage 9: Convert staged spatial/XML BEFORE applying constraints/indexes.
             if (ctx.Request.RunStage9ConversionBeforeConstraintsAndIndexes)
             {
                 ctx.Engine.Raise(MigrationStage.PostValidation, "Converting staged spatial/XML before enforcement...");
                 ctx.AppendLog("[PostValidation] Converting staged spatial/XML before enforcement...");
-                await ctx.Engine.ConvertSpatialAndXmlAsync(ctx, ct);
+                errors.AddRange(await ctx.Engine.ConvertSpatialAndXmlAsync(ctx, ct));
             }
+
+            // Stage 9: Apply PK/UQ constraints + indexes AFTER conversion (or immediately if conversion disabled).
+            ctx.Engine.Raise(MigrationStage.PostValidation, "Deploying primary/unique constraints and indexes (post-conversion)...");
+            ctx.AppendLog("[PostValidation] Deploying primary/unique constraints and indexes (post-conversion)...");
+            errors.AddRange(await ctx.Engine.DeployPrimaryKeysUniquesAndIndexesAsync(ctx, ct));
 
             ctx.Engine.Raise(MigrationStage.PostValidation, "Running basic row-count validation (first 50 tables)...");
             ctx.AppendLog("[PostValidation] Starting row-count validation (first 50 tables)...");
             await ctx.ToolMigStageAsync(MigrationStage.PostValidation, "InProgress", "Row-count validation", 0);
 
-            var errors = new List<StageError>();
             foreach (var t in ctx.Tables.Take(50))
             {
                 ct.ThrowIfCancellationRequested();
@@ -87,7 +96,7 @@ public sealed partial class MigrationEngine
                     if (ctx.StageMode == ErrorHandlingMode.FailFast) throw;
                 }
             }
-            
+
             // v1.1: default stats gather (best effort)
             await ctx.Engine.GatherSchemaStatsAsync(ctx, ct);
 
@@ -183,6 +192,6 @@ public sealed partial class MigrationEngine
                     ex);
             }
         }
-        }
     }
+}
 

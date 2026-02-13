@@ -67,7 +67,7 @@ public async Task RunAsync(MigrationContext ctx, CancellationToken ct)
                     try
                     {
                         var columns = await ctx.Engine._sqlMeta.GetTableColumnsAsync(ctx.OpenSql, ctx.Request.SourceDatabase, t.Schema, t.Table, ct);
-                        ddlForDiagnostics = OracleDdlGenerator.CreateTableDdl(ctx.GetTargetSchema(t.Schema), t.Table, columns, ctx.Engine._typeMapper);
+                        ddlForDiagnostics = OracleDdlGenerator.CreateTableDdl(ctx.GetTargetSchema(t.Schema), t.Table, columns, ctx.Engine._typeMapper, ctx.Request.EnableSpatialXmlStaging);
                         ddlForDiagnostics = SuppressSequenceDefaultsForValidation(ddlForDiagnostics);
                         await ctx.Engine._oraMeta.ValidateDdlAsync(ctx.OpenOra, ddlForDiagnostics, ct);
                         await ctx.ToolMigObjectAsync(MigrationStage.DataDefValidation, t.Schema, t.Table, "TABLE", "Completed", null, null);

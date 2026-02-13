@@ -279,6 +279,14 @@ public sealed class MigrationRequest
     public bool UseOracleBulkCopy { get; init; } = true;
 
     /// <summary>
+    /// When true (default), generate Oracle objects using unquoted UPPERCASE identifiers where possible
+    /// and prefer unqualified table names with CURRENT_SCHEMA for OracleBulkCopy. This avoids OracleBulkCopy
+    /// DBMS_ASSERT name validation failures (ORA-44003) that commonly occur with quoted identifiers.
+    /// </summary>
+    public bool UseUnquotedUppercaseIdentifiers { get; init; } = true;
+
+
+    /// <summary>
     /// OracleBulkCopy batch size.
     /// </summary>
     public int BulkCopyBatchSize { get; init; } = 5000;

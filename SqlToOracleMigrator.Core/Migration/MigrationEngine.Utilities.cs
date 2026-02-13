@@ -133,7 +133,7 @@ private async Task DeployTableAsync(SqlConnection openSql, OracleConnection open
 
         // IMPORTANT: Do not quote normal usernames/schemas (e.g., SYSTEM). Quoted usernames become case-sensitive and often fail.
         var schemaPrefix = OracleIdent.FormatSchema(targetSchema);
-        var drop = $"BEGIN EXECUTE IMMEDIATE 'DROP TABLE {schemaPrefix}.{OracleIdent.QuoteIdent(table)}'; EXCEPTION WHEN OTHERS THEN NULL; END;";
+        var drop = $"BEGIN EXECUTE IMMEDIATE 'DROP TABLE {schemaPrefix}.{OracleIdent.FormatObject(table, preferUnquotedUpper)}'; EXCEPTION WHEN OTHERS THEN NULL; END;";
         await using (var dropCmd = new OracleCommand(drop, openOra))
         {
             await dropCmd.ExecuteNonQueryAsync(cancellationToken);
@@ -149,6 +149,8 @@ private async Task DeployTableAsync(SqlConnection openSql, OracleConnection open
 
 private async Task CopyTableAsync(SqlConnection openSql, OracleConnection openOra, string dbName, string schema, string table, string targetSchema, CancellationToken cancellationToken)
     {
+        var preferUnquotedUpper = _requestAccessor?.Invoke()?.UseUnquotedUppercaseIdentifiers ?? true;
+
 
 // FIX: DataMigration runs with DOP>1. DbConnection instances are not safe for concurrent readers/transactions.
 // Prefer per-table connections. If providers sanitize ConnectionString after Open() (default Persist Security Info=false),
@@ -239,7 +241,7 @@ try
         selectCmd.CommandTimeout = 0;
 
         var schemaPrefix = OracleIdent.FormatSchema(targetSchema);
-        var insertSql = $"INSERT INTO {schemaPrefix}.{OracleIdent.QuoteIdent(table)} ({string.Join(",", targetColNames.Select(OracleIdent.QuoteIdent))}) VALUES ({string.Join(",", targetColNames.Select((c, i) => $":p{i}"))})";
+        var insertSql = $"INSERT INTO {schemaPrefix}.{OracleIdent.FormatObject(table, preferUnquotedUpper)} ({string.Join(",", targetColNames.Select(OracleIdent.QuoteIdent))}) VALUES ({string.Join(",", targetColNames.Select((c, i) => $":p{i}"))})";
 
         await using var txn = openOra.BeginTransaction();
         await using var insertCmd = new OracleCommand(insertSql, openOra)
@@ -530,7 +532,7 @@ private async Task ValidateTableDataAsync(
         selectCmd.CommandTimeout = 0;
 
         var schemaPrefix = OracleIdent.FormatSchema(targetSchema);
-        var insertSql = $"INSERT INTO {schemaPrefix}.{OracleIdent.QuoteIdent(table)} ({string.Join(",", targetColNames.Select(OracleIdent.QuoteIdent))}) VALUES ({string.Join(",", targetColNames.Select((c, i) => $":p{i}"))})";
+        var insertSql = $"INSERT INTO {schemaPrefix}.{OracleIdent.FormatObject(table, preferUnquotedUpper)} ({string.Join(",", targetColNames.Select(OracleIdent.QuoteIdent))}) VALUES ({string.Join(",", targetColNames.Select((c, i) => $":p{i}"))})";
 
         await using var txn = openOra.BeginTransaction();
         await using var insertCmd = new OracleCommand(insertSql, openOra)
@@ -709,7 +711,7 @@ if ((meta.DbType == OracleDbType.Raw || meta.DbType == OracleDbType.LongRaw) && 
 private static async Task<long> GetOracleTableRowCountAsync(OracleConnection openOra, string schema, string table, CancellationToken cancellationToken)
     {
         var schemaPrefix = OracleIdent.FormatSchema(schema);
-        var sql = $"SELECT COUNT(*) FROM {schemaPrefix}.{OracleIdent.QuoteIdent(table)}";
+        var sql = $"SELECT COUNT(*) FROM {schemaPrefix}.{OracleIdent.FormatObject(table, preferUnquotedUpper)}";
         await using var cmd = new OracleCommand(sql, openOra);
         var result = await cmd.ExecuteScalarAsync(cancellationToken);
         return result is null or DBNull ? 0 : Convert.ToInt64(result);

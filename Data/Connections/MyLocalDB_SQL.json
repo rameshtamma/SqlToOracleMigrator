@@ -1,12 +1,23 @@
 {
   "Name": "MyLocalDB_SQL",
-  "Engine": 0,
+  "Engine": "SqlServer",
   "Region": "Dev",
-  "Hostname": "127.0.0.1",
-  "Port": 1433,
+  "Notes": null,
+  "Color": null,
   "Username": "sa",
   "UseWindowsAuthentication": false,
   "SavePassword": false,
+  "EncryptedPassword": null,
+  "Hostname": "127.0.0.1",
+  "Port": 1433,
   "DefaultDatabase": "master",
-  "LastTestStatus": 0
+  "AuthenticationType": null,
+  "ConnectionType": null,
+  "Role": null,
+  "UseSid": true,
+  "Sid": null,
+  "ServiceName": null,
+  "LastTestStatus": "Green",
+  "LastTestUtc": "2026-02-12T11:58:09.8242235+00:00",
+  "LastTestMessage": "Connection test succeeded."
 }

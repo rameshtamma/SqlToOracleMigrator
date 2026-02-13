@@ -60,6 +60,50 @@ public static class OracleIdent
         return s.ToUpperInvariant();
     }
 
-    private static bool IsQuoted(string s)
+    
+    /// <summary>
+    /// Returns true if the name can be used as an unquoted Oracle identifier.
+    /// Oracle resolves unquoted identifiers as UPPERCASE, and SIMPLE_SQL_NAME disallows quotes/dots/spaces.
+    /// </summary>
+    public static bool IsSafeUnquoted(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return false;
+        var n = name.Trim();
+
+        // If already quoted, treat as not safe for unquoted usage.
+        if (IsQuoted(n)) return false;
+
+        // Must start with a letter.
+        if (!char.IsLetter(n[0])) return false;
+
+        for (int i = 1; i < n.Length; i++)
+        {
+            var c = n[i];
+            if (!(char.IsLetterOrDigit(c) || c == '_' || c == '$' || c == '#'))
+                return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Formats an object identifier (table/column/index/constraint) either as unquoted UPPERCASE (preferred)
+    /// or as a quoted identifier when required.
+    /// </summary>
+    public static string FormatObject(string name, bool preferUnquotedUppercase)
+    {
+        if (string.IsNullOrWhiteSpace(name)) throw new ArgumentException("Identifier is required.", nameof(name));
+        var n = name.Trim();
+
+        if (preferUnquotedUppercase && IsSafeUnquoted(n))
+            return n.ToUpperInvariant();
+
+        // If user explicitly provided quotes, keep as-is.
+        if (IsQuoted(n)) return n;
+
+        return QuoteIdent(n);
+    }
+
+private static bool IsQuoted(string s)
         => s.Length >= 2 && s.StartsWith('"') && s.EndsWith('"');
 }

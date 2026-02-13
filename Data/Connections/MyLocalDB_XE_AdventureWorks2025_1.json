@@ -1,8 +1,8 @@
 {
-  "Name": "MyLocalDB_XE",
+  "Name": "MyLocalDB_XE_AdventureWorks2025_1",
   "Engine": "Oracle",
   "Region": "Dev",
-  "Notes": null,
+  "Notes": " (auto-generated PDB connection for AdventureWorks2025)",
   "Color": null,
   "Username": "system",
   "UseWindowsAuthentication": false,
@@ -14,10 +14,10 @@
   "AuthenticationType": "Default",
   "ConnectionType": "Basic",
   "Role": "default",
-  "UseSid": true,
-  "Sid": "XE",
-  "ServiceName": null,
-  "LastTestStatus": "Green",
-  "LastTestUtc": "2026-02-12T03:11:48.1281276+00:00",
-  "LastTestMessage": "Connection test succeeded."
+  "UseSid": false,
+  "Sid": null,
+  "ServiceName": "AdventureWorks2025",
+  "LastTestStatus": "Yellow",
+  "LastTestUtc": null,
+  "LastTestMessage": null
 }

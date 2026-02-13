@@ -1,13 +1,19 @@
 using System.Linq;
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
 using Oracle.ManagedDataAccess.Client;
 
 namespace SqlToOracleMigrator.Core;
 
 public sealed partial class MigrationEngine
 {
-    private async Task ConvertSpatialAndXmlAsync(MigrationContext ctx, CancellationToken ct)
+    private async Task<List<StageError>> ConvertSpatialAndXmlAsync(MigrationContext ctx, CancellationToken ct)
     {
-        if (!ctx.Request.EnableSpatialXmlStaging) return;
+
+        if (!ctx.Request.EnableSpatialXmlStaging) return new List<StageError>();
+
+        var errors = new List<StageError>();
 
         foreach (var (schema, table) in ctx.Tables)
         {
@@ -18,18 +24,31 @@ public sealed partial class MigrationEngine
             {
                 await ConvertSpatialAndXmlForTableAsync(ctx.OpenOra, targetSchema, table, ct);
 
+                // After successful conversion, enforce NOT NULL for special columns that were NOT NULL in source.
+                // This is Rule (A): "nullable-initial special-type" — keep nullable during load, enforce after conversion.
+                await EnforceSpecialTypeNotNullsAsync(ctx, schema, table, targetSchema, ct);
+
                 if (ctx.Request.KeepStagingColumnsOnlyOnFailure)
                 {
-                    // Drop staging columns only if conversion succeeded.
+                    // Option 3: drop staging columns only if conversion succeeded.
                     await DropSpatialXmlStagingColumnsAsync(ctx.OpenOra, targetSchema, table, ct);
                 }
             }
-            catch
+            catch (Exception ex)
             {
-                // Option 1: Fail-fast on conversion failure. Keep staging columns to allow diagnosis.
-                throw;
+                // Option 3: keep staging columns on failure so the user can diagnose and retry.
+                errors.Add(StageError.FromException(MigrationStage.PostValidation, schema, table, ex));
+                ctx.AppendLog($"[PostValidation][WARN] Stage 9 conversion failed for {schema}.{table}: {ex.Message}");
+                _logger.Warn($"Stage 9 conversion failed for {schema}.{table}: {ex.Message}");
+
+                if (ctx.StageMode == ErrorHandlingMode.FailFast)
+                    throw;
             }
         }
+
+        // If user asked to keep staging always, do nothing further.
+        return errors;
+
     }
 
     private static async Task ConvertSpatialAndXmlForTableAsync(OracleConnection openOra, string targetSchema, string table, CancellationToken ct)
@@ -100,7 +119,97 @@ END;";
         }
     }
 
-    private static async Task DropSpatialXmlStagingColumnsAsync(OracleConnection openOra, string targetSchema, string table, CancellationToken ct)
+    
+    /// <summary>
+    /// Rule (A): special-type base columns (XMLTYPE / SDO_GEOMETRY) are created nullable for load,
+    /// then enforced NOT NULL after conversion IF they were NOT NULL in SQL Server and contain no NULLs in Oracle.
+    /// </summary>
+    private async Task EnforceSpecialTypeNotNullsAsync(MigrationContext ctx, string sourceSchema, string table, string targetSchema, CancellationToken ct)
+    {
+        // Identify XML / spatial columns from SQL Server and their nullability.
+        const string sql = @"
+SELECT c.name AS ColumnName,
+       t.name AS TypeName,
+       c.is_nullable AS IsNullable
+  FROM sys.columns c
+  JOIN sys.types t ON c.user_type_id = t.user_type_id
+  JOIN sys.tables tb ON c.object_id = tb.object_id
+  JOIN sys.schemas s ON tb.schema_id = s.schema_id
+ WHERE s.name = @p_schema
+   AND tb.name = @p_table
+   AND t.name IN ('xml', 'geography', 'geometry')
+ ORDER BY c.column_id;";
+
+        var specials = new List<(string Col, string Type, bool IsNullable)>();
+        await using (var cmd = new Microsoft.Data.SqlClient.SqlCommand(sql, ctx.OpenSql))
+        {
+            cmd.Parameters.AddWithValue("@p_schema", sourceSchema);
+            cmd.Parameters.AddWithValue("@p_table", table);
+
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            while (await r.ReadAsync(ct))
+            {
+                var col = r.GetString(0);
+                var typ = r.GetString(1);
+                var isNullable = r.GetBoolean(2);
+                specials.Add((col, typ, isNullable));
+            }
+        }
+
+        // Only enforce for source NOT NULL columns.
+        var toEnforce = specials.Where(x => !x.IsNullable).ToList();
+        if (toEnforce.Count == 0) return;
+
+        var schemaPrefix = OracleIdent.FormatSchema(targetSchema);
+        var tableName = OracleIdent.QuoteIdent(table);
+
+        foreach (var (col, _, _) in toEnforce)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            // Ensure the column exists and is currently nullable in Oracle.
+            const string colMeta = @"
+SELECT NULLABLE
+  FROM ALL_TAB_COLUMNS
+ WHERE OWNER = :p_owner AND TABLE_NAME = :p_table AND COLUMN_NAME = :p_col";
+            string? nullableFlag = null;
+            await using (var c = new OracleCommand(colMeta, ctx.OpenOra) { BindByName = true })
+            {
+                c.Parameters.Add(new OracleParameter("p_owner", OracleDbType.Varchar2, targetSchema.ToUpperInvariant(), System.Data.ParameterDirection.Input));
+                c.Parameters.Add(new OracleParameter("p_table", OracleDbType.Varchar2, table.ToUpperInvariant(), System.Data.ParameterDirection.Input));
+                c.Parameters.Add(new OracleParameter("p_col", OracleDbType.Varchar2, col.ToUpperInvariant(), System.Data.ParameterDirection.Input));
+                var o = await c.ExecuteScalarAsync(ct);
+                nullableFlag = o?.ToString();
+            }
+
+            if (string.IsNullOrWhiteSpace(nullableFlag) || nullableFlag.Equals("N", System.StringComparison.OrdinalIgnoreCase))
+                continue; // doesn't exist or already NOT NULL
+
+            // Only enforce if there are no NULLs (otherwise ALTER will fail).
+            var nullCountSql = $"SELECT COUNT(*) FROM {schemaPrefix}.{tableName} WHERE {OracleIdent.QuoteIdent(col)} IS NULL";
+            long nullCount = 0;
+            await using (var n = new OracleCommand(nullCountSql, ctx.OpenOra) { CommandTimeout = 0 })
+            {
+                var o = await n.ExecuteScalarAsync(ct);
+                if (o != null && o != System.DBNull.Value)
+                    nullCount = System.Convert.ToInt64(o);
+            }
+
+            if (nullCount != 0)
+            {
+                ctx.AppendLog($"[PostValidation][INFO] Skipping NOT NULL enforcement for {sourceSchema}.{table}.{col} because {nullCount} NULL(s) exist after conversion.");
+                continue;
+            }
+
+            var alter = $"ALTER TABLE {schemaPrefix}.{tableName} MODIFY ({OracleIdent.QuoteIdent(col)} NOT NULL)";
+            await using var a = new OracleCommand(alter, ctx.OpenOra) { CommandTimeout = 0 };
+            await a.ExecuteNonQueryAsync(ct);
+
+            ctx.AppendLog($"[PostValidation][OK] Enforced NOT NULL for special column {sourceSchema}.{table}.{col} (Rule A).");
+        }
+    }
+
+private static async Task DropSpatialXmlStagingColumnsAsync(OracleConnection openOra, string targetSchema, string table, CancellationToken ct)
     {
         var schemaPrefix = OracleIdent.FormatSchema(targetSchema);
         var tableName = OracleIdent.QuoteIdent(table);
