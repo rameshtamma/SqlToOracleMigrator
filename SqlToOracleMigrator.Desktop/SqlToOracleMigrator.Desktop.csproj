@@ -13,7 +13,6 @@
   <ItemGroup>
     <ProjectReference Include="..\SqlToOracleMigrator.Core\SqlToOracleMigrator.Core.csproj" />
   </ItemGroup>
-
   <ItemGroup>
     <!-- Copy Data folder to output -->
     <Content Include="..\Data\**\*">
@@ -21,5 +20,4 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
   </ItemGroup>
-
 </Project>

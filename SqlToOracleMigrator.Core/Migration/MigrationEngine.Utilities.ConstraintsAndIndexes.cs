@@ -49,6 +49,9 @@ public sealed partial class MigrationEngine
                 continue;
             }
 
+            if (ShouldSkipDueToKeyLength(sourceSchema, table, $"constraint '{k.Name}'", k.Columns, oraCols))
+                continue;
+
             if (!await TryExecuteOracleIndexLikeDdlAsync(openOra, ddl, sourceSchema, table, $"constraint '{k.Name}'", cancellationToken))
                 continue;
         }
@@ -72,6 +75,9 @@ public sealed partial class MigrationEngine
                 continue;
             }
 
+            if (ShouldSkipDueToKeyLength(sourceSchema, table, $"index '{ix.Name}'", ix.KeyColumns, oraCols))
+                continue;
+
             if (!await TryExecuteOracleIndexLikeDdlAsync(openOra, ddl, sourceSchema, table, $"index '{ix.Name}'", cancellationToken))
                 continue;
         }
@@ -84,7 +90,57 @@ public sealed partial class MigrationEngine
            || dataType.Equals("CLOB", StringComparison.OrdinalIgnoreCase)
            || dataType.Equals("NCLOB", StringComparison.OrdinalIgnoreCase)
            || dataType.Equals("LONG", StringComparison.OrdinalIgnoreCase)
-           || dataType.Equals("LONG RAW", StringComparison.OrdinalIgnoreCase);
+           || dataType.Equals("LONG RAW", StringComparison.OrdinalIgnoreCase)
+           // AdventureWorks has SQL Server XML indexes (PXML_/XMLPATH_) which map to Oracle XMLTYPE.
+           // In practice, these often rely on LOB storage and "plain" B-tree indexing fails (ORA-02327).
+           || dataType.Equals("XMLTYPE", StringComparison.OrdinalIgnoreCase)
+           // Spatial objects are also not suitable for generic B-tree indexes.
+           || dataType.Equals("SDO_GEOMETRY", StringComparison.OrdinalIgnoreCase);
+
+    // Safe default; actual max depends on DB block size (often around ~6397 for 8K blocks).
+    private const int DefaultMaxIndexKeyBytes = 6000;
+
+    private static int EstimateIndexKeyBytes(IReadOnlyList<string> cols, Dictionary<string, OracleColumnInfo> oraCols)
+    {
+        var total = 0;
+        foreach (var c in cols)
+        {
+            if (!oraCols.TryGetValue(c, out var info))
+            {
+                total += 128; // unknown: assume small-ish
+                continue;
+            }
+
+            var dt = info.DataType?.Trim() ?? string.Empty;
+
+            if (dt.StartsWith("VARCHAR2", StringComparison.OrdinalIgnoreCase)
+                || dt.StartsWith("NVARCHAR2", StringComparison.OrdinalIgnoreCase)
+                || dt.StartsWith("CHAR", StringComparison.OrdinalIgnoreCase)
+                || dt.StartsWith("NCHAR", StringComparison.OrdinalIgnoreCase)
+                || dt.StartsWith("RAW", StringComparison.OrdinalIgnoreCase))
+            {
+                total += Math.Max(1, info.DataLength);
+                continue;
+            }
+
+            if (dt.StartsWith("NUMBER", StringComparison.OrdinalIgnoreCase)) { total += 22; continue; }
+            if (dt.Equals("DATE", StringComparison.OrdinalIgnoreCase)) { total += 7; continue; }
+            if (dt.StartsWith("TIMESTAMP", StringComparison.OrdinalIgnoreCase)) { total += 11; continue; }
+
+            total += 256;
+        }
+
+        return total;
+    }
+
+    private bool ShouldSkipDueToKeyLength(string sourceSchema, string table, string objectLabel, IReadOnlyList<string> cols, Dictionary<string, OracleColumnInfo> oraCols)
+    {
+        var bytes = EstimateIndexKeyBytes(cols, oraCols);
+        if (bytes <= DefaultMaxIndexKeyBytes) return false;
+
+        _logger.Warn($"[DdlGeneration][WARN] TABLE {sourceSchema}.{table}: Skipping {objectLabel} because estimated key length {bytes} bytes exceeds {DefaultMaxIndexKeyBytes} (prevents ORA-01450). Consider surrogate keys or prefix/function-based indexes.");
+        return true;
+    }
 
     private static bool ContainsLobColumn(IReadOnlyList<string> cols, Dictionary<string, OracleColumnInfo> oraCols, out string lobCol)
     {

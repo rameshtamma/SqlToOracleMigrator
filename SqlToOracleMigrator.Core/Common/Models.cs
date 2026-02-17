@@ -341,6 +341,18 @@ public sealed class MigrationRequest
     /// </summary>
     public bool EnforceTablespaceMapping { get; init; } = true;
 
+    /// <summary>
+    /// Optional: default tablespace to use when auto-creating schemas/users.
+    /// If null/empty, Oracle will use database defaults.
+    /// </summary>
+    public string? DefaultTablespace { get; init; }
+
+    /// <summary>
+    /// Optional: temporary tablespace to use when auto-creating schemas/users.
+    /// If null/empty, Oracle will use database defaults.
+    /// </summary>
+    public string? TempTablespace { get; init; }
+
     public string TablespaceMappingFile { get; init; } = "Data/Config/tablespace_mappings.json";
 
 }

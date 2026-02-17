@@ -635,29 +635,67 @@ WHERE s.name = @SchemaName AND seq.name = @SeqName;";
         string runDir,
         CancellationToken ct)
     {
+        var ddl = await GenerateViewDdlAsync(openSql, dbName, schema, viewName, targetSchema, allowStub, runDir, ct);
+
+        // CREATE OR REPLACE is idempotent; avoid explicit DROP.
+        var schemaQ = OracleIdent.FormatSchema(targetSchema);
+        var nameQ = OracleIdent.QuoteIdent(viewName);
+        var stub = $"CREATE OR REPLACE VIEW {schemaQ}.{nameQ} AS SELECT CAST(NULL AS NUMBER) AS DUMMY FROM DUAL WHERE 1=0";
+
+        await ExecuteOracleWithFallbackAsync(openOra, ddl, stub, allowStub, ct);
+        await EnsureOracleObjectValidOrFallbackAsync(openOra, targetSchema, viewName, "VIEW", stub, allowStub, ct);
+    }
+
+    internal async Task<string> GenerateViewDdlAsync(
+        SqlConnection openSql,
+        string dbName,
+        string schema,
+        string viewName,
+        string targetSchema,
+        bool allowStub,
+        string runDir,
+        CancellationToken ct)
+    {
         var def = await GetSqlModuleDefinitionAsync(openSql, dbName, schema, viewName, ct) ?? string.Empty;
         WriteDefinitionArtifact(runDir, "VIEW", schema, viewName, def);
 
         var schemaQ = OracleIdent.FormatSchema(targetSchema);
         var nameQ = OracleIdent.QuoteIdent(viewName);
 
-        var drop = $"BEGIN EXECUTE IMMEDIATE 'DROP VIEW {schemaQ}.{nameQ}'; EXCEPTION WHEN OTHERS THEN NULL; END;";
-        await using (var dcmd = new OracleCommand(drop, openOra))
-            await dcmd.ExecuteNonQueryAsync(ct);
-
-        // Attempt best-effort transform; if compilation still fails, create a stub view.
         var text = BestEffortModuleTextTransforms(def);
-        // Replace CREATE VIEW with CREATE OR REPLACE VIEW and schema qualification.
         text = ReplaceCreateHeader(text, "VIEW", schema, viewName, schemaQ, nameQ);
+        if (!string.IsNullOrWhiteSpace(text))
+            return text;
 
-        var stub = $"CREATE OR REPLACE VIEW {schemaQ}.{nameQ} AS SELECT CAST(NULL AS NUMBER) AS DUMMY FROM DUAL WHERE 1=0";
-        await ExecuteOracleWithFallbackAsync(openOra, text, stub, allowStub, ct);
-        await EnsureOracleObjectValidOrFallbackAsync(openOra, targetSchema, viewName, "VIEW", stub, allowStub, ct);
+        if (!allowStub)
+            throw new InvalidOperationException($"View definition not found for {schema}.{viewName}.");
+
+        return $"CREATE OR REPLACE VIEW {schemaQ}.{nameQ} AS SELECT CAST(NULL AS NUMBER) AS DUMMY FROM DUAL WHERE 1=0";
     }
 
     public async Task DeployProcedureAsync(
         SqlConnection openSql,
         OracleConnection openOra,
+        string dbName,
+        string schema,
+        string procName,
+        string targetSchema,
+        bool allowStub,
+        string runDir,
+        CancellationToken ct)
+    {
+        var ddl = await GenerateProcedureDdlAsync(openSql, dbName, schema, procName, targetSchema, allowStub, runDir, ct);
+
+        // CREATE OR REPLACE is idempotent; avoid explicit DROP.
+        var schemaQ = OracleIdent.FormatSchema(targetSchema);
+        var stub = BuildProcedureStubPreservingSignature(schemaQ, procName, ddl);
+
+        await ExecuteOracleWithFallbackAsync(openOra, ddl, stub, allowStub, ct);
+        await EnsureOracleObjectValidOrFallbackAsync(openOra, targetSchema, procName, "PROCEDURE", stub, allowStub, ct);
+    }
+
+    internal async Task<string> GenerateProcedureDdlAsync(
+        SqlConnection openSql,
         string dbName,
         string schema,
         string procName,
@@ -672,21 +710,38 @@ WHERE s.name = @SchemaName AND seq.name = @SeqName;";
         var schemaQ = OracleIdent.FormatSchema(targetSchema);
         var nameQ = OracleIdent.QuoteIdent(procName);
 
-        var drop = $"BEGIN EXECUTE IMMEDIATE 'DROP PROCEDURE {schemaQ}.{nameQ}'; EXCEPTION WHEN OTHERS THEN NULL; END;";
-        await using (var dcmd = new OracleCommand(drop, openOra))
-            await dcmd.ExecuteNonQueryAsync(ct);
-
         var text = BestEffortModuleTextTransforms(def);
         text = ReplaceCreateHeader(text, "PROCEDURE", schema, procName, schemaQ, nameQ);
+        if (!string.IsNullOrWhiteSpace(text))
+            return text;
 
-        var stub = BuildProcedureStubPreservingSignature(schemaQ, procName, def);
-        await ExecuteOracleWithFallbackAsync(openOra, text, stub, allowStub, ct);
-        await EnsureOracleObjectValidOrFallbackAsync(openOra, targetSchema, procName, "PROCEDURE", stub, allowStub, ct);
+        if (!allowStub)
+            throw new InvalidOperationException($"Procedure definition not found for {schema}.{procName}.");
+
+        return BuildProcedureStubPreservingSignature(schemaQ, procName, def);
     }
 
     public async Task DeployFunctionAsync(
         SqlConnection openSql,
         OracleConnection openOra,
+        string dbName,
+        string schema,
+        string funcName,
+        string targetSchema,
+        bool allowStub,
+        string runDir,
+        CancellationToken ct)
+    {
+        var ddl = await GenerateFunctionDdlAsync(openSql, dbName, schema, funcName, targetSchema, allowStub, runDir, ct);
+
+        var schemaQ = OracleIdent.FormatSchema(targetSchema);
+        var stub = await BuildFunctionStubFromSqlMetadataAsync(openSql, dbName, schema, funcName, schemaQ, ddl, ct);
+        await ExecuteOracleWithFallbackAsync(openOra, ddl, stub, allowStub, ct);
+        await EnsureOracleObjectValidOrFallbackAsync(openOra, targetSchema, funcName, "FUNCTION", stub, allowStub, ct);
+    }
+
+    internal async Task<string> GenerateFunctionDdlAsync(
+        SqlConnection openSql,
         string dbName,
         string schema,
         string funcName,
@@ -701,16 +756,15 @@ WHERE s.name = @SchemaName AND seq.name = @SeqName;";
         var schemaQ = OracleIdent.FormatSchema(targetSchema);
         var nameQ = OracleIdent.QuoteIdent(funcName);
 
-        var drop = $"BEGIN EXECUTE IMMEDIATE 'DROP FUNCTION {schemaQ}.{nameQ}'; EXCEPTION WHEN OTHERS THEN NULL; END;";
-        await using (var dcmd = new OracleCommand(drop, openOra))
-            await dcmd.ExecuteNonQueryAsync(ct);
-
         var text = BestEffortModuleTextTransforms(def);
         text = ReplaceCreateHeader(text, "FUNCTION", schema, funcName, schemaQ, nameQ);
+        if (!string.IsNullOrWhiteSpace(text))
+            return text;
 
-        var stub = await BuildFunctionStubFromSqlMetadataAsync(openSql, dbName, schema, funcName, schemaQ, def, ct);
-        await ExecuteOracleWithFallbackAsync(openOra, text, stub, allowStub, ct);
-        await EnsureOracleObjectValidOrFallbackAsync(openOra, targetSchema, funcName, "FUNCTION", stub, allowStub, ct);
+        if (!allowStub)
+            throw new InvalidOperationException($"Function definition not found for {schema}.{funcName}.");
+
+        return await BuildFunctionStubFromSqlMetadataAsync(openSql, dbName, schema, funcName, schemaQ, def, ct);
     }
 
     public async Task DeployTriggerAsync(
@@ -726,27 +780,59 @@ WHERE s.name = @SchemaName AND seq.name = @SeqName;";
         string runDir,
         CancellationToken ct)
     {
-        var def = await GetSqlModuleDefinitionAsync(openSql, dbName, triggerSchema, triggerName, ct) ?? string.Empty;
-        WriteDefinitionArtifact(runDir, "TRIGGER", triggerSchema, triggerName, def);
+        var ddl = await GenerateTriggerDdlAsync(openSql, dbName, triggerSchema, triggerName, parentName, parentTargetSchema, allowStub, runDir, ct);
 
-        var schemaQ = OracleIdent.FormatSchema(parentTargetSchema);
         var trgSchemaQ = OracleIdent.FormatSchema(parentTargetSchema);
         var trgNameQ = OracleIdent.QuoteIdent(triggerName);
         var parentQ = OracleIdent.QuoteIdent(parentName);
+        var stub = $"CREATE OR REPLACE TRIGGER {trgSchemaQ}.{trgNameQ} BEFORE INSERT OR UPDATE OR DELETE ON {trgSchemaQ}.{parentQ} BEGIN NULL; END;";
 
-        var drop = $"BEGIN EXECUTE IMMEDIATE 'DROP TRIGGER {trgSchemaQ}.{trgNameQ}'; EXCEPTION WHEN OTHERS THEN NULL; END;";
-        await using (var dcmd = new OracleCommand(drop, openOra))
-            await dcmd.ExecuteNonQueryAsync(ct);
+        await ExecuteOracleWithFallbackAsync(openOra, ddl, stub, allowStub, ct);
+        await EnsureOracleObjectValidOrFallbackAsync(openOra, parentTargetSchema, triggerName, "TRIGGER", stub, allowStub, ct);
+    }
 
-        // Naive replacement rarely works for triggers; create stub on target parent.
-        var stub = $"CREATE OR REPLACE TRIGGER {trgSchemaQ}.{trgNameQ} BEFORE INSERT OR UPDATE OR DELETE ON {schemaQ}.{parentQ} BEGIN NULL; END;";
+    internal async Task<string> GenerateTriggerDdlAsync(
+        SqlConnection openSql,
+        string dbName,
+        string triggerSchema,
+        string triggerName,
+        string parentName,
+        string parentTargetSchema,
+        bool allowStub,
+        string runDir,
+        CancellationToken ct)
+    {
+        var def = await GetSqlModuleDefinitionAsync(openSql, dbName, triggerSchema, triggerName, ct) ?? string.Empty;
+        WriteDefinitionArtifact(runDir, "TRIGGER", triggerSchema, triggerName, def);
 
-        // Try transformed text first (best effort)
+        var trgSchemaQ = OracleIdent.FormatSchema(parentTargetSchema);
+        var trgNameQ = OracleIdent.QuoteIdent(triggerName);
+        var parentQ = OracleIdent.QuoteIdent(parentName);
+        var stub = $"CREATE OR REPLACE TRIGGER {trgSchemaQ}.{trgNameQ} BEFORE INSERT OR UPDATE OR DELETE ON {trgSchemaQ}.{parentQ} BEGIN NULL; END;";
+
         var text = BestEffortModuleTextTransforms(def);
         text = ReplaceCreateHeader(text, "TRIGGER", triggerSchema, triggerName, trgSchemaQ, trgNameQ);
+        if (!string.IsNullOrWhiteSpace(text))
+        {
+            // SQL Server triggers often omit BEFORE/AFTER keywords (Oracle requires them).
+            // If we cannot confidently map the trigger, return a safe stub so Stage 5 validation
+            // and Stage 6 deployment can proceed.
+            if (ContainsOracleTriggerTiming(text))
+                return text;
+            return stub;
+        }
 
-        await ExecuteOracleWithFallbackAsync(openOra, text, stub, allowStub, ct);
-        await EnsureOracleObjectValidOrFallbackAsync(openOra, parentTargetSchema, triggerName, "TRIGGER", stub, allowStub, ct);
+        if (!allowStub)
+            throw new InvalidOperationException($"Trigger definition not found for {triggerSchema}.{triggerName}.");
+
+        return stub;
+    }
+
+    private static bool ContainsOracleTriggerTiming(string ddl)
+    {
+        var s = ddl.ToUpperInvariant();
+        // crude but effective: Oracle trigger header must contain one of these keywords.
+        return s.Contains(" BEFORE ") || s.Contains(" AFTER ") || s.Contains(" INSTEAD OF ");
     }
 
     public async Task DeploySynonymAsync(
@@ -759,10 +845,6 @@ WHERE s.name = @SchemaName AND seq.name = @SeqName;";
     {
         var schemaQ = OracleIdent.FormatSchema(targetSchema);
         var synQ = OracleIdent.QuoteIdent(synonymName);
-
-        var drop = $"BEGIN EXECUTE IMMEDIATE 'DROP SYNONYM {schemaQ}.{synQ}'; EXCEPTION WHEN OTHERS THEN NULL; END;";
-        await using (var dcmd = new OracleCommand(drop, openOra))
-            await dcmd.ExecuteNonQueryAsync(ct);
 
         // base_object_name might be [db].[schema].[object] or [schema].[object] or schema.object
         var cleaned = (baseObjectName ?? string.Empty).Replace("[", "").Replace("]", "").Trim();

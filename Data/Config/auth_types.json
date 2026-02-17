@@ -1,7 +1,5 @@
 [
-  "Default",
-  "OS",
-  "Kerberos",
-  "LDAP",
-  "SSH"
+  "SqlPassword",
+  "WindowsIntegrated",
+  "OraclePassword"
 ]

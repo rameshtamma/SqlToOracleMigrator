@@ -253,12 +253,52 @@ public sealed partial class MigrationEngine
 
         var runners = BuildStageRunners(ctx);
 
+        static string PhaseNameForStage(MigrationStage stage)
+        {
+            return stage switch
+            {
+                MigrationStage.ConnectionFingerprinting or MigrationStage.DeepDiscovery or MigrationStage.PlanningTopologicalGraph => "Assess & Plan",
+                MigrationStage.Provisioning or MigrationStage.DdlGenerationDryRun or MigrationStage.DeploymentSkeleton => "Schema Build",
+                MigrationStage.DataStrategySampling or MigrationStage.ParallelDataMigration => "Data Prep",
+                MigrationStage.PostLoadEnforcement or MigrationStage.FinalVerification => "Execute & Verify",
+                _ => "Unknown"
+            };
+        }
+
+        static bool IsPhaseTerminalStage(MigrationStage stage)
+            => stage is MigrationStage.PlanningTopologicalGraph
+                      or MigrationStage.DeploymentSkeleton
+                      or MigrationStage.ParallelDataMigration
+                      or MigrationStage.FinalVerification;
+
+        async Task UpsertPhaseAsync(string phase, string status, string? message, int errorCount, int confidence)
+        {
+            if (phase == "Unknown") return;
+            try
+            {
+                await _toolMig.UpsertGroupStatusAsync(openSql, runId, phase, status, message, errorCount, confidence, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.Warn( "Failed to update GroupStatus for {phase}: {ex.Message}");
+            }
+        }
+
         try
         {
             foreach (var r in runners)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+
+                var phase = PhaseNameForStage(r.Stage);
+                await UpsertPhaseAsync(phase, "InProgress",  "Running {r.Stage}", 0, ctx.Summary.Confidence);
+
                 await r.RunAsync(ctx, cancellationToken);
+
+                if (IsPhaseTerminalStage(r.Stage))
+                {
+                    await UpsertPhaseAsync(phase, "Completed",  "Phase completed at {r.Stage}", 0, ctx.Summary.Confidence);
+                }
             }
 
             // Mark run completed
@@ -275,7 +315,7 @@ public sealed partial class MigrationEngine
         }
     }
 
-    private static async Task<string> GetOracleContainerNameAsync(Oracle.ManagedDataAccess.Client.OracleConnection openOra, CancellationToken ct)
+    private static async Task<string> GetOracleContainerNameAsync(OracleConnection openOra, CancellationToken ct)
     {
         if (openOra is null) throw new ArgumentNullException(nameof(openOra));
         await using var cmd = openOra.CreateCommand();

@@ -1,6 +1,10 @@
 using Microsoft.Data.SqlClient;
 using System.Globalization;
 using SqlToOracleMigrator.Core.Scoring;
+using System;
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace SqlToOracleMigrator.Core;
 
@@ -15,7 +19,36 @@ public sealed class SqlServerMetadataProvider
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
-    public async Task<IReadOnlyList<string>> ListDatabasesAsync(SqlConnection openConnection, CancellationToken cancellationToken)
+    
+
+private static double? ToNullableDouble(SqlDataReader rdr, int ordinal)
+{
+    if (ordinal < 0) return null;
+    if (rdr.IsDBNull(ordinal)) return null;
+
+    object v = rdr.GetValue(ordinal);
+    try
+    {
+        return v switch
+        {
+            double d => d,
+            float f => f,
+            decimal m => (double)m,
+            int i => i,
+            long l => l,
+            short s => s,
+            byte b => b,
+            string str when double.TryParse(str, NumberStyles.Any, CultureInfo.InvariantCulture, out var parsed) => parsed,
+            _ => Convert.ToDouble(v, CultureInfo.InvariantCulture)
+        };
+    }
+    catch
+    {
+        return null;
+    }
+}
+
+public async Task<IReadOnlyList<string>> ListDatabasesAsync(SqlConnection openConnection, CancellationToken cancellationToken)
     {
         if (openConnection is null) throw new ArgumentNullException(nameof(openConnection));
 
@@ -53,9 +86,9 @@ public sealed class SqlServerMetadataProvider
 
         if (await rdr.ReadAsync(cancellationToken))
         {
-            summary.DatabaseSizeGb = rdr.IsDBNull(0) ? null : rdr.GetDouble(0);
-            summary.DataSizeGb = rdr.IsDBNull(1) ? null : rdr.GetDouble(1);
-            summary.LogOrRedoSizeGb = rdr.IsDBNull(2) ? null : rdr.GetDouble(2);
+            summary.DatabaseSizeGb = ToNullableDouble(rdr, 0);
+            summary.DataSizeGb = ToNullableDouble(rdr, 1);
+            summary.LogOrRedoSizeGb = ToNullableDouble(rdr, 2);
 
             summary.SchemaCount = rdr.IsDBNull(3) ? null : rdr.GetInt32(3);
             summary.TableCount = rdr.IsDBNull(4) ? null : rdr.GetInt32(4);
@@ -107,7 +140,7 @@ public sealed class SqlServerMetadataProvider
                 CreatedDate = rdr.IsDBNull(3) ? null : GetDateTimeOffset(rdr, 3),
                 LastModifiedDate = rdr.IsDBNull(4) ? null : GetDateTimeOffset(rdr, 4),
                 EstimatedRows = rdr.IsDBNull(5) ? null : rdr.GetInt64(5),
-                EstimatedSizeMb = rdr.IsDBNull(6) ? null : rdr.GetDouble(6),
+                EstimatedSizeMb = ToNullableDouble(rdr, 6),
                 DependsOnCount = rdr.IsDBNull(7) ? null : rdr.GetInt32(7),
                 DependedByCount = rdr.IsDBNull(8) ? null : rdr.GetInt32(8),
                 ComplexityScore = rdr.IsDBNull(9) ? 1 : rdr.GetInt32(9),

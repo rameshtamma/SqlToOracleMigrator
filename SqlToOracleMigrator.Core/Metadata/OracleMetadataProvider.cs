@@ -322,6 +322,32 @@ public static void ValidateOracleIdentifier(string ident)
         _logger.Info($"[SchemaProvisioning] Created Oracle schema/user {userName}.");
     }
 
+    public async Task DropUserIfExistsAsync(OracleConnection openConnection, string schema, CancellationToken ct)
+    {
+        ValidateOracleIdentifier(schema);
+        if (!await SchemaExistsAsync(openConnection, schema, ct))
+            return;
+
+        var userName = OracleIdent.FormatSchema(schema);
+        _logger.Warn($"[SchemaProvisioning] Dropping Oracle user/schema {userName} (CASCADE)...");
+        var sql = $"DROP USER {userName} CASCADE";
+        await using var cmd = new OracleCommand(sql, openConnection);
+        await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    public async Task PurgeRecycleBinAsync(OracleConnection openConnection, CancellationToken ct)
+    {
+        try
+        {
+            await using var cmd = new OracleCommand("PURGE RECYCLEBIN", openConnection);
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+        catch
+        {
+            // Best effort.
+        }
+    }
+
     private async Task<string> GetPreferredPermanentTablespaceAsync(OracleConnection openConnection, CancellationToken ct)
     {
         // Prefer USERS if present, else choose any online permanent tablespace that is not SYSTEM/SYSAUX/UNDO.

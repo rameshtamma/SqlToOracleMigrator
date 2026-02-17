@@ -55,9 +55,40 @@ public sealed class SqlToOracleTypeMapper
 
         // Render template
         var rendered = template
-            .Replace("{len}", len <= 0 ? (key is "nvarchar" ? "2000" : "4000") : len.ToString(), StringComparison.OrdinalIgnoreCase)
+            .Replace("{len}", len <= 0 ? (key is "uniqueidentifier" ? "16" : (key is "nvarchar" ? "2000" : (key is "raw" ? "16" : "4000"))) : len.ToString(), StringComparison.OrdinalIgnoreCase)
             .Replace("{precision}", p <= 0 ? "38" : p.ToString(), StringComparison.OrdinalIgnoreCase)
             .Replace("{scale}", s < 0 ? "0" : s.ToString(), StringComparison.OrdinalIgnoreCase);
+
+
+        // Sanity-fix: some mapping templates may omit required length parentheses (e.g., "RAW", "VARCHAR2").
+        // Oracle requires a length for VARCHAR2/NVARCHAR2/CHAR/NCHAR/RAW in CREATE TABLE.
+        // We clamp defaults to safe values when metadata doesn't provide one.
+        var renderedUpper = rendered.Trim().ToUpperInvariant();
+        if (renderedUpper == "RAW")
+        {
+            var rawLen = len > 0 ? len : (key == "uniqueidentifier" ? 16 : 2000);
+            rendered = $"RAW({rawLen})";
+        }
+        else if (renderedUpper == "VARCHAR2")
+        {
+            var vlen_local = len > 0 ? len : 4000;
+            rendered = $"VARCHAR2({vlen_local})";
+        }
+        else if (renderedUpper == "NVARCHAR2")
+        {
+            var nvlen_local = len > 0 ? len : 2000;
+            rendered = $"NVARCHAR2({nvlen_local})";
+        }
+        else if (renderedUpper == "CHAR")
+        {
+            var clen = len > 0 ? len : 1;
+            rendered = $"CHAR({clen})";
+        }
+        else if (renderedUpper == "NCHAR")
+        {
+            var nclen = len > 0 ? len : 1;
+            rendered = $"NCHAR({nclen})";
+        }
 
         // Post-guard: if template produced over-limit VARCHAR2/NVARCHAR2/RAW, downgrade to LOB/RAW-safe.
         var upper = rendered.ToUpperInvariant();

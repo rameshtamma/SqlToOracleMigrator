@@ -44,3 +44,29 @@ public sealed class ToolMigObjectInfo
     public string? ErrorCode { get; set; }
     public string? ErrorMessage { get; set; }
 }
+
+public sealed class ToolMigArtifactInfo
+{
+    public Guid RunId { get; set; }
+    public string ArtifactName { get; set; } = "";
+    public string ContentType { get; set; } = "application/octet-stream";
+    public byte[] Blob { get; set; } = Array.Empty<byte>();
+    public string? Description { get; set; }
+    public DateTimeOffset CreatedAt { get; set; }
+}
+
+/// <summary>
+/// Phase/group-level tracking for independent execution/resume.
+/// ToolMig.GroupStatus keyed by (RunId, Phase).
+/// </summary>
+public sealed class ToolMigGroupStatusInfo
+{
+    public Guid RunId { get; set; }
+    public string Phase { get; set; } = "";
+    public string Status { get; set; } = "NotStarted";
+    public DateTimeOffset? StartedAt { get; set; }
+    public DateTimeOffset? EndedAt { get; set; }
+    public int ErrorCount { get; set; }
+    public int Confidence { get; set; } = 100;
+    public string? Message { get; set; }
+}

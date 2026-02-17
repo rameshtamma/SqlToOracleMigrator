@@ -69,7 +69,14 @@ public sealed partial class MigrationEngine
         {
             MigrationPlanOption.Feasibility => all.Where(r => r.Stage is MigrationStage.ConnectionFingerprinting or MigrationStage.DeepDiscovery or MigrationStage.PlanningTopologicalGraph).ToList(),
             MigrationPlanOption.DdlValidation => all.Where(r => r.Stage is MigrationStage.ConnectionFingerprinting or MigrationStage.DeepDiscovery or MigrationStage.PlanningTopologicalGraph or MigrationStage.Provisioning or MigrationStage.DdlGenerationDryRun or MigrationStage.DeploymentSkeleton).ToList(),
-            MigrationPlanOption.DataValidation => all.Where(r => r.Stage is MigrationStage.ConnectionFingerprinting or MigrationStage.DeepDiscovery or MigrationStage.PlanningTopologicalGraph or MigrationStage.Provisioning or MigrationStage.DdlGenerationDryRun or MigrationStage.DeploymentSkeleton or MigrationStage.DataStrategySampling).ToList(),
+            MigrationPlanOption.DataValidation => all.Where(r => r.Stage is MigrationStage.ConnectionFingerprinting
+                                                               or MigrationStage.DeepDiscovery
+                                                               or MigrationStage.PlanningTopologicalGraph
+                                                               or MigrationStage.Provisioning
+                                                               or MigrationStage.DdlGenerationDryRun
+                                                               or MigrationStage.DeploymentSkeleton
+                                                               or MigrationStage.DataStrategySampling
+                                                               or MigrationStage.ParallelDataMigration).ToList(),
             MigrationPlanOption.Migrate => all, // full pipeline but skip completed stages
             MigrationPlanOption.FullMigration => all,
             _ => all
@@ -89,6 +96,13 @@ public sealed partial class MigrationEngine
         public int DegreeOfParallelism { get; set; }
         public int TableCount { get; set; }
         public string ErrorHandlingMode { get; set; } = "FailFast";
+
+        /// <summary>
+        /// Phase confidence score (0..100). Computed during Phase 1 (Assess & Plan / Stage 3)
+        /// and updated during later phases as needed.
+        /// Used for ToolMig.GroupStatus updates and final certificate reporting.
+        /// </summary>
+        public int Confidence { get; set; } = 100;
     }
 
     private sealed record StageError(string Stage, string Schema, string Object, string ErrorType, string Message, string? Details)

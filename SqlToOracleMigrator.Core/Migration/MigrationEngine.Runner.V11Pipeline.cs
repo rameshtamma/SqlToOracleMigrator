@@ -43,42 +43,57 @@ public sealed partial class MigrationEngine
     private sealed class ProvisioningRunner : IMigrationStageRunner
     {
         public MigrationStage Stage => MigrationStage.Provisioning;
-        public Task RunAsync(MigrationContext ctx, CancellationToken ct) => new SchemaProvisioningRunner().RunAsync(ctx, ct);
+        public Task RunAsync(MigrationContext ctx, CancellationToken ct) => new SchemaBuildProvisioningRunner().RunAsync(ctx, ct);
     }
 
     private sealed class DdlGenerationDryRunRunner : IMigrationStageRunner
     {
         public MigrationStage Stage => MigrationStage.DdlGenerationDryRun;
-        public Task RunAsync(MigrationContext ctx, CancellationToken ct) => new DataDefValidationRunner().RunAsync(ctx, ct);
+
+        public async Task RunAsync(MigrationContext ctx, CancellationToken ct)
+        {
+            // Stage 5 (v1.2): DDL Validation
+            // - Generate DDL scripts for the target
+            // - Validate syntax via DBMS_SQL.PARSE (parse-only)
+            // - Store validated scripts + validation report in ToolMig.RunArtifacts
+            await new SchemaBuildDdlValidationRunner().RunAsync(ctx, ct);
+        }
     }
 
     private sealed class DeploymentSkeletonRunner : IMigrationStageRunner
     {
         public MigrationStage Stage => MigrationStage.DeploymentSkeleton;
-        public Task RunAsync(MigrationContext ctx, CancellationToken ct) => new DdlGenerationRunner().RunAsync(ctx, ct);
+
+        public async Task RunAsync(MigrationContext ctx, CancellationToken ct)
+        {
+            // Stage 6 (v1.2): DDL Deployment
+            // - Deploy tables + dependent objects using idempotent PL/SQL wrappers
+            // - Resume: skip Success; retry Pending/Error
+            await new SchemaBuildDdlDeploymentRunner().RunAsync(ctx, ct);
+        }
     }
 
     private sealed class DataStrategySamplingRunner : IMigrationStageRunner
     {
         public MigrationStage Stage => MigrationStage.DataStrategySampling;
-        public Task RunAsync(MigrationContext ctx, CancellationToken ct) => new DataValidationRunner().RunAsync(ctx, ct);
+        public Task RunAsync(MigrationContext ctx, CancellationToken ct) => new DataPrepStrategySamplingV12Runner().RunAsync(ctx, ct);
     }
 
     private sealed class ParallelDataMigrationRunner : IMigrationStageRunner
     {
         public MigrationStage Stage => MigrationStage.ParallelDataMigration;
-        public Task RunAsync(MigrationContext ctx, CancellationToken ct) => new DataMigrationRunner().RunAsync(ctx, ct);
+        public Task RunAsync(MigrationContext ctx, CancellationToken ct) => new DataPrepParallelDataMigrationV12Runner().RunAsync(ctx, ct);
     }
 
     private sealed class PostLoadEnforcementRunner : IMigrationStageRunner
     {
         public MigrationStage Stage => MigrationStage.PostLoadEnforcement;
-        public Task RunAsync(MigrationContext ctx, CancellationToken ct) => new PostValidationRunner().RunAsync(ctx, ct);
+        public Task RunAsync(MigrationContext ctx, CancellationToken ct) => new PostLoadEnforcementV12Runner().RunAsync(ctx, ct);
     }
 
     private sealed class FinalVerificationRunner : IMigrationStageRunner
     {
         public MigrationStage Stage => MigrationStage.FinalVerification;
-        public Task RunAsync(MigrationContext ctx, CancellationToken ct) => new FinalizationRunner().RunAsync(ctx, ct);
+        public Task RunAsync(MigrationContext ctx, CancellationToken ct) => new FinalVerificationV12Runner().RunAsync(ctx, ct);
     }
 }

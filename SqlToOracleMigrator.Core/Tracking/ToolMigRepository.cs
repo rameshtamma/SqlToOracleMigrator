@@ -76,6 +76,40 @@ BEGIN
     CREATE INDEX IX_ToolMig_ObjectStatus_RunId_Stage_Status ON ToolMig.ObjectStatus(RunId, Stage, Status);
 END;
 
+IF OBJECT_ID('ToolMig.GroupStatus') IS NULL
+BEGIN
+    CREATE TABLE ToolMig.GroupStatus
+    (
+        RunId UNIQUEIDENTIFIER NOT NULL,
+        Phase NVARCHAR(64) NOT NULL,
+        Status NVARCHAR(32) NOT NULL,
+        StartedAt DATETIMEOFFSET NULL,
+        EndedAt DATETIMEOFFSET NULL,
+        ErrorCount INT NOT NULL DEFAULT(0),
+        Confidence INT NOT NULL DEFAULT(100),
+        Message NVARCHAR(4000) NULL,
+        CONSTRAINT PK_ToolMig_GroupStatus PRIMARY KEY (RunId, Phase),
+        CONSTRAINT FK_ToolMig_GroupStatus_Runs FOREIGN KEY (RunId) REFERENCES ToolMig.Runs(RunId)
+    );
+    CREATE INDEX IX_ToolMig_GroupStatus_RunId_Status ON ToolMig.GroupStatus(RunId, Status);
+END;
+
+IF OBJECT_ID('ToolMig.RunArtifacts') IS NULL
+BEGIN
+    CREATE TABLE ToolMig.RunArtifacts
+    (
+        RunId UNIQUEIDENTIFIER NOT NULL,
+        ArtifactName NVARCHAR(256) NOT NULL,
+        ContentType NVARCHAR(128) NOT NULL,
+        Blob VARBINARY(MAX) NOT NULL,
+        Description NVARCHAR(4000) NULL,
+        CreatedAt DATETIMEOFFSET NOT NULL CONSTRAINT DF_ToolMig_RunArtifacts_CreatedAt DEFAULT(SYSDATETIMEOFFSET()),
+        CONSTRAINT PK_ToolMig_RunArtifacts PRIMARY KEY (RunId, ArtifactName),
+        CONSTRAINT FK_ToolMig_RunArtifacts_Runs FOREIGN KEY (RunId) REFERENCES ToolMig.Runs(RunId)
+    );
+    CREATE INDEX IX_ToolMig_RunArtifacts_RunId ON ToolMig.RunArtifacts(RunId);
+END;
+
 -- Upgrade path: earlier versions had PK without ObjectType, which prevents tracking non-table objects
 IF OBJECT_ID('ToolMig.ObjectStatus') IS NOT NULL
 BEGIN
@@ -295,10 +329,11 @@ WHEN NOT MATCHED THEN
 
     public async Task<HashSet<string>> GetCompletedObjectsAsync(SqlConnection openSql, Guid runId, string stage, CancellationToken cancellationToken)
     {
+        // Treat Skipped/Success as terminal so resume does not re-run the same object forever.
         const string sql = @"
 SELECT SchemaName, ObjectName, ObjectType
 FROM ToolMig.ObjectStatus
-WHERE RunId=@runId AND Stage=@stage AND Status='Completed';
+WHERE RunId=@runId AND Stage=@stage AND Status IN ('Completed','Skipped','Success','Succeeded');
 ";
         await using var cmd = new SqlCommand(sql, openSql);
         cmd.Parameters.AddWithValue("@runId", runId);
@@ -329,5 +364,139 @@ WHERE RunId=@runId;
         cmd.Parameters.AddWithValue("@runId", runId);
         cmd.Parameters.AddWithValue("@status", success ? "Completed" : "Failed");
         await cmd.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task PutArtifactAsync(
+        SqlConnection openSql,
+        Guid runId,
+        string artifactName,
+        string contentType,
+        byte[] blob,
+        string? description,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(artifactName)) throw new ArgumentException("ArtifactName is required", nameof(artifactName));
+        blob ??= Array.Empty<byte>();
+
+        const string sql = @"
+MERGE ToolMig.RunArtifacts AS t
+USING (SELECT @runId AS RunId, @name AS ArtifactName) AS s
+ON (t.RunId = s.RunId AND t.ArtifactName = s.ArtifactName)
+WHEN MATCHED THEN
+  UPDATE SET ContentType=@ct, Blob=@blob, Description=@desc, CreatedAt=SYSDATETIMEOFFSET()
+WHEN NOT MATCHED THEN
+  INSERT (RunId, ArtifactName, ContentType, Blob, Description)
+  VALUES (@runId, @name, @ct, @blob, @desc);
+";
+
+        await using var cmd = new SqlCommand(sql, openSql);
+        cmd.Parameters.AddWithValue("@runId", runId);
+        cmd.Parameters.AddWithValue("@name", artifactName);
+        cmd.Parameters.AddWithValue("@ct", contentType);
+        cmd.Parameters.AddWithValue("@blob", blob);
+        cmd.Parameters.AddWithValue("@desc", (object?)description ?? DBNull.Value);
+        await cmd.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<ToolMigArtifactInfo?> GetArtifactAsync(
+        SqlConnection openSql,
+        Guid runId,
+        string artifactName,
+        CancellationToken cancellationToken)
+    {
+        const string sql = @"
+SELECT RunId, ArtifactName, ContentType, Blob, Description, CreatedAt
+FROM ToolMig.RunArtifacts
+WHERE RunId=@runId AND ArtifactName=@name;
+";
+        await using var cmd = new SqlCommand(sql, openSql);
+        cmd.Parameters.AddWithValue("@runId", runId);
+        cmd.Parameters.AddWithValue("@name", artifactName);
+
+        await using var rdr = await cmd.ExecuteReaderAsync(cancellationToken);
+        if (!await rdr.ReadAsync(cancellationToken)) return null;
+
+        return new ToolMigArtifactInfo
+        {
+            RunId = rdr.GetGuid(0),
+            ArtifactName = rdr.GetString(1),
+            ContentType = rdr.GetString(2),
+            Blob = (byte[])rdr[3],
+            Description = rdr.IsDBNull(4) ? null : rdr.GetString(4),
+            CreatedAt = rdr.GetFieldValue<DateTimeOffset>(5)
+        };
+    }
+
+    public async Task UpsertGroupStatusAsync(
+        SqlConnection openSql,
+        Guid runId,
+        string phase,
+        string status,
+        string? message,
+        int errorCount,
+        int confidence,
+        CancellationToken cancellationToken)
+    {
+        const string sql = @"
+MERGE ToolMig.GroupStatus AS t
+USING (SELECT @runId AS RunId, @phase AS Phase) AS s
+ON (t.RunId = s.RunId AND t.Phase = s.Phase)
+WHEN MATCHED THEN
+  UPDATE SET
+    Status=@status,
+    EndedAt=CASE WHEN @status IN ('Completed','Failed','Skipped') THEN SYSDATETIMEOFFSET() ELSE NULL END,
+    StartedAt=COALESCE(t.StartedAt, SYSDATETIMEOFFSET()),
+    ErrorCount=@err,
+    Confidence=@conf,
+    Message=@msg
+WHEN NOT MATCHED THEN
+  INSERT (RunId, Phase, Status, StartedAt, EndedAt, ErrorCount, Confidence, Message)
+  VALUES (@runId, @phase, @status, SYSDATETIMEOFFSET(),
+          CASE WHEN @status IN ('Completed','Failed','Skipped') THEN SYSDATETIMEOFFSET() ELSE NULL END,
+          @err, @conf, @msg);
+";
+
+        await using var cmd = new SqlCommand(sql, openSql);
+        cmd.Parameters.AddWithValue("@runId", runId);
+        cmd.Parameters.AddWithValue("@phase", phase);
+        cmd.Parameters.AddWithValue("@status", status);
+        cmd.Parameters.AddWithValue("@err", errorCount);
+        cmd.Parameters.AddWithValue("@conf", confidence);
+        cmd.Parameters.AddWithValue("@msg", (object?)message ?? DBNull.Value);
+        await cmd.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<List<ToolMigGroupStatusInfo>> GetGroupStatusAsync(
+        SqlConnection openSql,
+        Guid runId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = @"
+SELECT RunId, Phase, Status, StartedAt, EndedAt, ErrorCount, Confidence, Message
+FROM ToolMig.GroupStatus
+WHERE RunId=@runId
+ORDER BY Phase;
+";
+
+        await using var cmd = new SqlCommand(sql, openSql);
+        cmd.Parameters.AddWithValue("@runId", runId);
+
+        var list = new List<ToolMigGroupStatusInfo>();
+        await using var rdr = await cmd.ExecuteReaderAsync(cancellationToken);
+        while (await rdr.ReadAsync(cancellationToken))
+        {
+            list.Add(new ToolMigGroupStatusInfo
+            {
+                RunId = rdr.GetGuid(0),
+                Phase = rdr.GetString(1),
+                Status = rdr.GetString(2),
+                StartedAt = rdr.IsDBNull(3) ? null : rdr.GetFieldValue<DateTimeOffset>(3),
+                EndedAt = rdr.IsDBNull(4) ? null : rdr.GetFieldValue<DateTimeOffset>(4),
+                ErrorCount = rdr.GetInt32(5),
+                Confidence = rdr.GetInt32(6),
+                Message = rdr.IsDBNull(7) ? null : rdr.GetString(7)
+            });
+        }
+        return list;
     }
 }

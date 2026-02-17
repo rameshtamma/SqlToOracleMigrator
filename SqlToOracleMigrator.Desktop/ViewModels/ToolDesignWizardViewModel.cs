@@ -589,6 +589,34 @@ public sealed class ToolDesignWizardViewModel : NotifyBase
                 catch (Exception ex)
                 {
                     _services.Logger.Error("Migration failed.", ex);
+
+                    // v1.2: Surface OracleException mapping as actionable UI message.
+                    try
+                    {
+                        if (ex is Oracle.ManagedDataAccess.Client.OracleException oex)
+                        {
+                            var ui = SqlToOracleMigrator.Core.Oracle.OracleErrorCatalog.Map(oex);
+                            System.Windows.Application.Current?.Dispatcher?.Invoke(() =>
+                            {
+                                MessageBox.Show(
+                                    $"{ui.Description}\n\nOracle: ORA-{ui.OracleNumber:00000}\n\nSuggested actions: {string.Join(", ", ui.Actions)}",
+                                    ui.Title,
+                                    MessageBoxButton.OK,
+                                    ui.Severity == SqlToOracleMigrator.Core.Oracle.UiSeverity.Red ? MessageBoxImage.Error : MessageBoxImage.Warning);
+                            });
+                        }
+                        else
+                        {
+                            System.Windows.Application.Current?.Dispatcher?.Invoke(() =>
+                            {
+                                MessageBox.Show(ex.Message, "Migration failed", MessageBoxButton.OK, MessageBoxImage.Error);
+                            });
+                        }
+                    }
+                    catch
+                    {
+                        // Avoid crashing background task due to UI errors.
+                    }
                 }
             });
 

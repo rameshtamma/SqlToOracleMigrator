@@ -11,9 +11,9 @@
   "float": "BINARY_DOUBLE",
   "real": "BINARY_FLOAT",
   "date": "DATE",
-  "datetime": "TIMESTAMP",
-  "datetime2": "TIMESTAMP",
-  "smalldatetime": "TIMESTAMP",
+  "datetime": "TIMESTAMP(3)",
+  "datetime2": "TIMESTAMP(7)",
+  "smalldatetime": "TIMESTAMP(0)",
   "time": "INTERVAL DAY TO SECOND",
   "char": "CHAR({len})",
   "nchar": "NCHAR({len})",
@@ -26,12 +26,6 @@
   "varbinary": "BLOB",
   "image": "BLOB",
   "xml": "XMLTYPE",
-  "datetimeoffset": "TIMESTAMP WITH TIME ZONE",
-  "rowversion": "RAW(8)",
-  "timestamp": "RAW(8)",
-  "hierarchyid": "RAW(892)",
-  "geography": "MDSYS.SDO_GEOMETRY",
-  "geometry": "MDSYS.SDO_GEOMETRY",
-  "sql_variant": "VARCHAR2(4000)",
-  "sysname": "NVARCHAR2(128)"
+  "geography": "SDO_GEOMETRY",
+  "geometry": "SDO_GEOMETRY"
 }

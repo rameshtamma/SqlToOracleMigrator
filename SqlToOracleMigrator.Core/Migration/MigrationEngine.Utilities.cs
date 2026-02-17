@@ -126,10 +126,19 @@ private async Task<List<(string Schema, string Table)>> DiscoverTablesAsync(SqlC
         return list;
     }
 
-private async Task DeployTableAsync(SqlConnection openSql, OracleConnection openOra, string dbName, string schema, string table, string targetSchema, CancellationToken cancellationToken)
+private async Task DeployTableAsync(
+        SqlConnection openSql,
+        OracleConnection openOra,
+        string dbName,
+        string schema,
+        string table,
+        string targetSchema,
+        bool enableSpatialXmlStaging,
+        CancellationToken cancellationToken)
     {
+        var preferUnquotedUpper = _requestAccessor?.Invoke()?.UseUnquotedUppercaseIdentifiers ?? true;
         var columns = await _sqlMeta.GetTableColumnsAsync(openSql, dbName, schema, table, cancellationToken);
-        var ddl = OracleDdlGenerator.CreateTableDdl(targetSchema, table, columns, _typeMapper);
+        var ddl = OracleDdlGenerator.CreateTableDdl(targetSchema, table, columns, _typeMapper, enableSpatialXmlStaging);
 
         // IMPORTANT: Do not quote normal usernames/schemas (e.g., SYSTEM). Quoted usernames become case-sensitive and often fail.
         var schemaPrefix = OracleIdent.FormatSchema(targetSchema);
@@ -438,6 +447,7 @@ private static string BuildSqlSelectExprForColumn(SqlTableColumn c)
         return $"CAST({col} AS varbinary(max)) AS {col}";
 
     // xml: stage to NVARCHAR(MAX) for later XMLTYPE conversion in Oracle.
+    // NOTE: We intentionally project the main column as NULL for stage-load, and load the stage column instead.
     if (string.Equals(c.SqlTypeName, "xml", StringComparison.OrdinalIgnoreCase))
     {
         var stage = SqlIdent.Bracket(c.ColumnName + "__XML");
@@ -453,7 +463,58 @@ private static string BuildSqlSelectExprForColumn(SqlTableColumn c)
         return $"CAST(NULL AS varbinary(max)) AS {col}, {col}.STAsBinary() AS {wkb}, {col}.STSrid AS {srid}";
     }
 
+    // v1.2: stage-aware default policy for NOT NULL columns to prevent ORA-01400 when source violates constraints.
+    // Only applied for common scalar types; other types are passed through.
+    if (!c.IsNullable)
+    {
+        var t = (c.SqlTypeName ?? string.Empty).Trim();
+        if (IsString(t))
+            return $"ISNULL({col}, N'') AS {col}";
+        if (IsNumeric(t))
+            return $"ISNULL({col}, 0) AS {col}";
+        if (IsDateTime(t))
+            return $"ISNULL({col}, CAST('1900-01-01' AS datetime2)) AS {col}";
+        if (t.Equals("uniqueidentifier", StringComparison.OrdinalIgnoreCase))
+            return $"ISNULL({col}, '00000000-0000-0000-0000-000000000000') AS {col}";
+        if (IsBinary(t))
+            return $"ISNULL({col}, 0x) AS {col}";
+    }
+
     return col;
+
+    static bool IsString(string t)
+        => t.Equals("varchar", StringComparison.OrdinalIgnoreCase)
+           || t.Equals("nvarchar", StringComparison.OrdinalIgnoreCase)
+           || t.Equals("char", StringComparison.OrdinalIgnoreCase)
+           || t.Equals("nchar", StringComparison.OrdinalIgnoreCase)
+           || t.Equals("text", StringComparison.OrdinalIgnoreCase)
+           || t.Equals("ntext", StringComparison.OrdinalIgnoreCase);
+
+    static bool IsNumeric(string t)
+        => t.Equals("int", StringComparison.OrdinalIgnoreCase)
+           || t.Equals("bigint", StringComparison.OrdinalIgnoreCase)
+           || t.Equals("smallint", StringComparison.OrdinalIgnoreCase)
+           || t.Equals("tinyint", StringComparison.OrdinalIgnoreCase)
+           || t.Equals("bit", StringComparison.OrdinalIgnoreCase)
+           || t.Equals("decimal", StringComparison.OrdinalIgnoreCase)
+           || t.Equals("numeric", StringComparison.OrdinalIgnoreCase)
+           || t.Equals("money", StringComparison.OrdinalIgnoreCase)
+           || t.Equals("smallmoney", StringComparison.OrdinalIgnoreCase)
+           || t.Equals("float", StringComparison.OrdinalIgnoreCase)
+           || t.Equals("real", StringComparison.OrdinalIgnoreCase);
+
+    static bool IsDateTime(string t)
+        => t.Equals("date", StringComparison.OrdinalIgnoreCase)
+           || t.Equals("datetime", StringComparison.OrdinalIgnoreCase)
+           || t.Equals("datetime2", StringComparison.OrdinalIgnoreCase)
+           || t.Equals("smalldatetime", StringComparison.OrdinalIgnoreCase)
+           || t.Equals("datetimeoffset", StringComparison.OrdinalIgnoreCase)
+           || t.Equals("time", StringComparison.OrdinalIgnoreCase);
+
+    static bool IsBinary(string t)
+        => t.Equals("binary", StringComparison.OrdinalIgnoreCase)
+           || t.Equals("varbinary", StringComparison.OrdinalIgnoreCase)
+           || t.Equals("image", StringComparison.OrdinalIgnoreCase);
 }
 
 private async Task ValidateTableDataAsync(
@@ -469,6 +530,8 @@ private async Task ValidateTableDataAsync(
     {
         // Ensure we're validating against the intended source DB.
         try { openSql.ChangeDatabase(dbName); } catch { /* best effort */ }
+
+        var preferUnquotedUpper = _requestAccessor?.Invoke()?.UseUnquotedUppercaseIdentifiers ?? true;
 
         var columns = await _sqlMeta.GetTableColumnsAsync(openSql, dbName, schema, table, cancellationToken);
         if (columns.Count == 0) return;
@@ -711,7 +774,8 @@ if ((meta.DbType == OracleDbType.Raw || meta.DbType == OracleDbType.LongRaw) && 
 private static async Task<long> GetOracleTableRowCountAsync(OracleConnection openOra, string schema, string table, CancellationToken cancellationToken)
     {
         var schemaPrefix = OracleIdent.FormatSchema(schema);
-        var sql = $"SELECT COUNT(*) FROM {schemaPrefix}.{OracleIdent.FormatObject(table, preferUnquotedUpper)}";
+        // Static helper: default to unquoted uppercase behavior.
+        var sql = $"SELECT COUNT(*) FROM {schemaPrefix}.{OracleIdent.FormatObject(table, preferUnquotedUppercase: true)}";
         await using var cmd = new OracleCommand(sql, openOra);
         var result = await cmd.ExecuteScalarAsync(cancellationToken);
         return result is null or DBNull ? 0 : Convert.ToInt64(result);
