@@ -1,14 +1,48 @@
 using Microsoft.Data.SqlClient;
 using Oracle.ManagedDataAccess.Client;
+using System.Linq;
 
 namespace SqlToOracleMigrator.Core;
 
 public sealed partial class MigrationEngine
 {
+    private static readonly HashSet<string> BulkUnsafeSqlTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "time",
+        "datetimeoffset",
+        "datetime2"
+    };
+
+    private static bool TryGetBulkUnsafeTypes(
+        IReadOnlyList<SqlTableColumn> columns,
+        out List<string> types)
+    {
+        types = columns
+            .Select(c => c.SqlTypeName)
+            .Where(t => !string.IsNullOrWhiteSpace(t) && BulkUnsafeSqlTypes.Contains(t))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(t => t, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        return types.Count > 0;
+    }
+
     private async Task CopyTableBulkAsync(SqlConnection openSql, OracleConnection openOra, string dbName, string schema, string table, string targetSchema, CancellationToken ct)
     {
         var columns = await _sqlMeta.GetTableColumnsAsync(openSql, dbName, schema, table, ct);
         if (columns.Count == 0) return;
+
+        // PERMANENT GUARD: OracleBulkCopy has known driver-level NullReferenceException bugs when consuming
+        // certain source CLR/SqlTypes (most commonly SQL Server TIME -> Oracle INTERVAL DAY TO SECOND, and
+        // DateTimeOffset -> TIMESTAMP WITH TIME ZONE). The non-bulk path normalizes these values safely.
+        // To avoid flaky driver crashes, automatically fall back to the stage-aware insert path for tables
+        // that contain these types.
+        if (TryGetBulkUnsafeTypes(columns, out var unsafeTypes))
+        {
+            _logger?.Info($"[BulkCopy] Table {schema}.{table} contains bulk-unsafe types ({string.Join(",", unsafeTypes)}); using stage-aware inserts (bulk disabled for this table)." );
+            await CopyTableAsync(openSql, openOra, dbName, schema, table, targetSchema, ct);
+            return;
+        }
 
         // Build projection with safe casts and staging columns for XML/spatial where needed.
         var selectSql = BuildSqlSelectForTable(schema, table, columns, useTopN: false);
@@ -60,7 +94,25 @@ public sealed partial class MigrationEngine
         }
         catch (OracleException ex) when (ex.Number == 44003)
         {
-            _logger?.Warn($"BulkCopy rejected destination table name '{(preferUnquotedUpper ? destTable : destTable)}' (ORA-44003). Falling back to stage-aware inserts using a fresh Oracle connection. {ex.Message}");
+            await BulkFallbackAsync($"BulkCopy rejected destination table name '{destTable}' (ORA-44003).", ex);
+            return;
+        }
+        catch (NullReferenceException ex)
+        {
+            // Driver-level bug inside Oracle.ManagedDataAccess (OracleBulkCopy) – do NOT fail the run.
+            // Fall back to the safe path which normalizes values.
+            await BulkFallbackAsync("OracleBulkCopy hit internal NullReferenceException (ODP.NET bug).", ex);
+            return;
+        }
+        catch (AggregateException ex) when (ex.InnerException is NullReferenceException)
+        {
+            await BulkFallbackAsync("OracleBulkCopy hit internal NullReferenceException (ODP.NET bug).", ex.InnerException!);
+            return;
+        }
+
+        async Task BulkFallbackAsync(string reason, Exception ex)
+        {
+            _logger?.Warn($"[BulkCopy] {reason} Falling back to stage-aware inserts for {schema}.{table}. {ex.GetType().Name}: {ex.Message}");
 
             // IMPORTANT: do NOT use openOra.ConnectionString here because ODP.NET can strip the Password
             // from ConnectionString after Open() unless Persist Security Info=true, which leads to ORA-01005.
@@ -73,7 +125,6 @@ public sealed partial class MigrationEngine
             await fallbackOra.OpenAsync(ct);
 
             await CopyTableAsync(openSql, fallbackOra, dbName, schema, table, targetSchema, ct);
-            return;
         }
 
         OracleBulkCopyOptions ctxBulkCopyOptions()

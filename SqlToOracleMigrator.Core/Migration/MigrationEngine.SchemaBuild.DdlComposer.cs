@@ -159,6 +159,10 @@ public sealed partial class MigrationEngine
         string targetSchema,
         CancellationToken ct)
     {
+        // Keep identifier formatting consistent across TABLE DDL and CONSTRAINT/INDEX DDL.
+        // If we create tables unquoted (UPPERCASE), constraints/indexes must reference the same names.
+        var preferUnquotedUpper = _requestAccessor?.Invoke()?.UseUnquotedUppercaseIdentifiers ?? true;
+
         var keys = await GetSqlKeyConstraintsAsync(openSql, dbName, sourceSchema, table, ct);
         var indexes = await GetSqlIndexesAsync(openSql, dbName, sourceSchema, table, ct);
         var keyConstraintNames = new HashSet<string>(keys.Select(k => k.Name), StringComparer.OrdinalIgnoreCase);
@@ -172,7 +176,7 @@ public sealed partial class MigrationEngine
                 continue;
             if (ShouldSkipDueToKeyLength(sourceSchema, table, $"constraint '{k.Name}'", k.Columns, oraCols))
                 continue;
-            var ddl = BuildOracleConstraintDdl(targetSchema, table, k);
+            var ddl = BuildOracleConstraintDdl(targetSchema, table, k, preferUnquotedUpper);
             list.Add(new GeneratedDdl("CONSTRAINT", k.Name, ddl));
         }
 
@@ -184,7 +188,7 @@ public sealed partial class MigrationEngine
                 continue;
             if (ShouldSkipDueToKeyLength(sourceSchema, table, $"index '{ix.Name}'", ix.KeyColumns, oraCols))
                 continue;
-            var ddl = BuildOracleIndexDdl(targetSchema, table, ix);
+            var ddl = BuildOracleIndexDdl(targetSchema, table, ix, preferUnquotedUpper);
             list.Add(new GeneratedDdl("INDEX", ix.Name, ddl));
         }
 

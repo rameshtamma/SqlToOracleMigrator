@@ -4,7 +4,8 @@
         xmlns:vm="clr-namespace:SqlToOracleMigrator.Desktop.ViewModels"
         xmlns:conv="clr-namespace:SqlToOracleMigrator.Desktop.Converters"
         Title="SQL Server → Oracle Migrator" Height="900" Width="1400"
-        WindowStartupLocation="CenterScreen">
+        WindowStartupLocation="CenterScreen"
+        Closing="MainWindow_Closing">
     <Window.Resources>
         <conv:StatusToBrushConverter x:Key="StatusToBrushConverter" />
         <conv:BoolToVisibilityConverter x:Key="BoolToVisibilityConverter" />
@@ -25,6 +26,7 @@
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
 
@@ -58,6 +60,11 @@
 
                 <TextBlock Grid.Column="6" VerticalAlignment="Center" Foreground="#666"
                            Text="{Binding StatusText}" />
+
+                <Button Grid.Column="7" Margin="8,0,0,0" Padding="10,6"
+                        Command="{Binding CloseAppCommand}" ToolTip="Close the application. All active connections and resources will be released safely.">
+                    <TextBlock Text="Close" />
+                </Button>
             </Grid>
         </Border>
 

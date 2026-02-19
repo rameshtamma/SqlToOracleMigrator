@@ -151,6 +151,10 @@ public sealed partial class MigrationEngine
                 });
             }
 
+            // 5) End-user comparison report (source vs target)
+            // This reduces manual effort by providing rowcount/missing-table info in one place.
+            await ctx.Engine.GenerateSourceTargetComparisonReportAsync(ctx, ct);
+
             // finalize stage
             var hasErrors = cert.Issues.Any(x => x.Severity == CertificateSeverity.Error);
             await ctx.ToolMigStageAsync(Stage, hasErrors ? "Failed" : "Completed",

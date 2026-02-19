@@ -60,6 +60,7 @@ public sealed partial class MigrationEngine
                         ctx.ForeignKeys,
                         ctx.GetTargetSchema,
                         ctx.Request.ForeignKeysEnableNoValidate,
+                        ctx.Request.UseUnquotedUppercaseIdentifiers,
                         ct);
                     errors.AddRange(fkErrors);
                 }

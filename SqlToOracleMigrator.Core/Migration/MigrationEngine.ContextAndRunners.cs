@@ -29,6 +29,16 @@ public sealed partial class MigrationEngine
         int Dop,
         ErrorHandlingMode StageMode)
     {
+        /// <summary>
+        /// The stage currently executing (best-effort; used for run reporting).
+        /// </summary>
+        public MigrationStage CurrentStage { get; set; } = MigrationStage.ConnectionFingerprinting;
+
+        /// <summary>
+        /// Per-stage execution reports written to disk + summarized in RunSummary.html.
+        /// </summary>
+        public Dictionary<MigrationStage, StageExecutionReport> StageReports { get; } = new();
+
         public List<(string Schema, string Table)> Tables { get; set; } = new();
 
         public List<(string Schema, string Name)> Sequences { get; set; } = new();
@@ -105,7 +115,7 @@ public sealed partial class MigrationEngine
         public int Confidence { get; set; } = 100;
     }
 
-    private sealed record StageError(string Stage, string Schema, string Object, string ErrorType, string Message, string? Details)
+    internal sealed record StageError(string Stage, string Schema, string Object, string ErrorType, string Message, string? Details)
     {
         public static StageError FromException(MigrationStage stage, string schema, string obj, Exception ex)
             => new StageError(stage.ToString(), schema, obj, ex.GetType().Name, ex.Message, ex.ToString());

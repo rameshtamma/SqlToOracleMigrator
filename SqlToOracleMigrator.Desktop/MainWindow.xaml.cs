@@ -18,6 +18,25 @@ public partial class MainWindow : Window
             DataContext = AppServices.Current.MainViewModel;
     }
 
+    private async void MainWindow_Closing(object? sender, System.ComponentModel.CancelEventArgs e)
+    {
+        // Best-effort graceful shutdown: cancel background work, close DB connections, flush logs.
+        // Never block exit indefinitely and never throw.
+        try
+        {
+            if (DataContext is MainViewModel vm)
+                await vm.ShutdownAsync();
+        }
+        catch { }
+
+        try
+        {
+            // Dispose services early so resources are released even if shutdown is triggered by the window "X".
+            AppServices.Current?.Dispose();
+        }
+        catch { }
+    }
+
     private async void ConnectionsTree_SelectedItemChanged(object sender, RoutedPropertyChangedEventArgs<object> e)
     {
         if (DataContext is not MainViewModel vm) return;

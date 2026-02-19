@@ -97,13 +97,18 @@ public sealed class PostMigrationValidator
         var schemaList = schemas.Select(s => s.Trim()).Where(s => s.Length > 0).ToArray();
 
         // Objects
+        // Filter out Microsoft shipped + replication/system artifacts so validation focuses on user objects.
         var sql = @"
 USE [__DB__];
 SELECT s.name AS schema_name, o.name AS object_name, o.type AS object_type
 FROM sys.objects o
 JOIN sys.schemas s ON o.schema_id = s.schema_id
 WHERE s.name IN (__SCHEMAS__)
+  AND o.is_ms_shipped = 0
   AND o.type IN ('U','V','P','FN','TF','IF','TR','SN','SO')
+  AND o.name NOT LIKE 'sp_MS%'
+  AND o.name NOT LIKE 'spt_%'
+  AND o.name NOT LIKE 'MSreplication_%'
 ORDER BY s.name, o.type, o.name;";
 
         sql = sql.Replace("__DB__", db.Replace("]", "]]"));
@@ -307,6 +312,20 @@ ORDER BY owner, object_type, object_name";
 
         var gate = new SemaphoreSlim(Math.Max(1, options.RowCountParallelism));
         var results = new ConcurrentDictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+        var resolved = new ConcurrentDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        // Candidate Oracle owners: user supplied schemas (upper), current user, and SYS (some migrations run as SYS).
+        var ownerCandidates = new List<string>();
+        ownerCandidates.AddRange(schemas.Select(s => s.Trim().ToUpperInvariant()).Where(s => s.Length > 0));
+        try
+        {
+            await using var ucmd = new OracleCommand("SELECT USER FROM dual", openOra);
+            var user = Convert.ToString(await ucmd.ExecuteScalarAsync(ct));
+            if (!string.IsNullOrWhiteSpace(user)) ownerCandidates.Add(user!.Trim().ToUpperInvariant());
+        }
+        catch { /* best-effort */ }
+        if (!ownerCandidates.Contains("SYS", StringComparer.OrdinalIgnoreCase)) ownerCandidates.Add("SYS");
+        ownerCandidates = ownerCandidates.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         var tasks = tableKeys.Select(async key =>
         {
             await gate.WaitAsync(ct);
@@ -315,9 +334,28 @@ ORDER BY owner, object_type, object_name";
                 var parts = key.Split('.', 2);
                 var schema = parts[0];
                 var name = parts[1];
-                var schemaQ = OracleIdent.FormatSchema(schema);
-                var nameQ = OracleIdent.QuoteIdent(name);
-                var sql = $"SELECT COUNT(*) FROM {schemaQ}.{nameQ}";
+                // Resolve actual owner/table-name in Oracle (schema mapping might differ; identifiers might be normalized).
+                var resolvedOra = await ResolveOracleTableAsync(openOra, name, ownerCandidates, ct);
+                if (resolvedOra is null)
+                {
+                    report.Issues.Add(new ValidationIssue
+                    {
+                        Severity = ValidationSeverity.Warn,
+                        Category = "RowCount",
+                        Schema = schema,
+                        Name = name,
+                        ObjectType = "TABLE",
+                        Message = "Failed to count Oracle rows: table not found in Oracle (owner/schema mapping mismatch)."
+                    });
+                    return;
+                }
+
+                resolved[key] = $"{resolvedOra.Value.Owner}.{resolvedOra.Value.TableName}";
+                var ownerQ = OracleIdent.FormatSchema(resolvedOra.Value.Owner);
+                // TableName from ALL_TABLES is already normalized to Oracle's storage name.
+                var tableQ = OracleIdent.FormatObject(resolvedOra.Value.TableName, preferUnquotedUppercase: true);
+                var sql = $"SELECT COUNT(*) FROM {ownerQ}.{tableQ}";
+
                 await using var cmd = new OracleCommand(sql, openOra);
                 cmd.CommandTimeout = Math.Max(30, options.RowCountCommandTimeoutSeconds);
                 var v = await cmd.ExecuteScalarAsync(ct);
@@ -343,6 +381,7 @@ ORDER BY owner, object_type, object_name";
 
         await Task.WhenAll(tasks);
         report.TargetInventory.TableRowCounts = results.ToDictionary(k => k.Key, v => v.Value, StringComparer.OrdinalIgnoreCase);
+        report.ResolvedOracleTables = resolved.ToDictionary(k => k.Key, v => v.Value, StringComparer.OrdinalIgnoreCase);
 
         foreach (var kvp in report.SourceInventory.TableRowCounts)
         {
@@ -362,6 +401,55 @@ ORDER BY owner, object_type, object_name";
                 }
             }
         }
+    }
+
+    private static async Task<(string Owner, string TableName)?> ResolveOracleTableAsync(
+        OracleConnection openOra,
+        string sourceTableName,
+        IReadOnlyList<string> ownerCandidates,
+        CancellationToken ct)
+    {
+        var t = sourceTableName.Trim();
+        if (t.Length == 0) return null;
+
+        // Oracle stores unquoted identifiers as uppercase. If the table was created quoted, ALL_TABLES stores the exact name.
+        // We try uppercase first, then original.
+        var namesToTry = new[] { t.ToUpperInvariant(), t };
+
+        foreach (var tableName in namesToTry.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            // 1) Preferred: find in candidate owners.
+            if (ownerCandidates.Count > 0)
+            {
+                var inOwners = string.Join(",", ownerCandidates.Select((_, i) => $":o{i}"));
+                var sql = $@"
+SELECT owner, table_name
+FROM all_tables
+WHERE table_name = :t
+  AND owner IN ({inOwners})
+ORDER BY CASE WHEN owner = :pref THEN 0 ELSE 1 END, owner";
+                await using var cmd = new OracleCommand(sql, openOra);
+                cmd.Parameters.Add(":t", OracleDbType.Varchar2, tableName, System.Data.ParameterDirection.Input);
+                for (var i = 0; i < ownerCandidates.Count; i++)
+                    cmd.Parameters.Add($":o{i}", OracleDbType.Varchar2, ownerCandidates[i], System.Data.ParameterDirection.Input);
+                cmd.Parameters.Add(":pref", OracleDbType.Varchar2, ownerCandidates[0], System.Data.ParameterDirection.Input);
+
+                await using var rdr = await cmd.ExecuteReaderAsync(ct);
+                if (await rdr.ReadAsync(ct))
+                    return (rdr.GetString(0), rdr.GetString(1));
+            }
+
+            // 2) Fallback: find in any owner (helps when schema mapping is unknown).
+            await using (var cmd2 = new OracleCommand("SELECT owner, table_name FROM all_tables WHERE table_name = :t ORDER BY owner", openOra))
+            {
+                cmd2.Parameters.Add(":t", OracleDbType.Varchar2, tableName, System.Data.ParameterDirection.Input);
+                await using var rdr2 = await cmd2.ExecuteReaderAsync(ct);
+                if (await rdr2.ReadAsync(ct))
+                    return (rdr2.GetString(0), rdr2.GetString(1));
+            }
+        }
+
+        return null;
     }
 
     private static async Task CompareKeysAndInvalidObjectsAsync(
@@ -514,6 +602,12 @@ public sealed class PostMigrationValidationReport
     public DbInventorySnapshot SourceInventory { get; set; } = new();
     public DbInventorySnapshot TargetInventory { get; set; } = new();
 
+    /// <summary>
+    /// For each source table key (schema.table), the resolved Oracle owner/table name used for counting.
+    /// Helps end users understand schema mapping without querying ALL_TABLES manually.
+    /// </summary>
+    public Dictionary<string, string> ResolvedOracleTables { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
     public List<ValidationIssue> Issues { get; set; } = new();
 
     public ValidationSummary Summary { get; set; } = new();
@@ -538,6 +632,35 @@ public sealed class PostMigrationValidationReport
         sb.AppendLine($"<h2>Post Migration Validation Report</h2>");
         sb.AppendLine($"<p><b>SQL DB:</b> {System.Net.WebUtility.HtmlEncode(SourceDatabase)}<br/><b>Oracle:</b> {System.Net.WebUtility.HtmlEncode(TargetDatabase)}<br/><b>Schemas:</b> {System.Net.WebUtility.HtmlEncode(string.Join(", ", Schemas))}<br/><b>Started:</b> {StartedUtc:u}<br/><b>Completed:</b> {CompletedUtc:u}</p>");
         sb.AppendLine($"<p><b>Summary:</b> SQL Objects={Summary.SourceObjectCount}, ORA Objects={Summary.TargetObjectCount}, Errors={Summary.ErrorCount}, Warnings={Summary.WarnCount}</p>");
+
+        // Checks summary (so the UI/report can show "success" with actual values)
+        sb.AppendLine("<h3>Checks</h3>");
+        sb.AppendLine("<table><tr><th>Check</th><th>Status</th><th>Details</th></tr>");
+        var anyErrors = Summary.ErrorCount > 0;
+        var anyWarns = Summary.WarnCount > 0;
+        sb.AppendLine($"<tr><td>Inventory</td><td class='{(anyErrors ? "err" : "")}'>{(anyErrors ? "Review" : "OK")}</td><td>SQL Objects={Summary.SourceObjectCount}, Oracle Objects={Summary.TargetObjectCount}</td></tr>");
+        sb.AppendLine($"<tr><td>Row counts</td><td class='{(Issues.Any(i => i.Category.StartsWith("RowCount", StringComparison.OrdinalIgnoreCase)) ? "warn" : "")}'>{(Options.IncludeRowCounts ? (Issues.Any(i => i.Category.StartsWith("RowCount", StringComparison.OrdinalIgnoreCase)) ? "Partial" : "OK") : "Skipped")}</td><td>Compared tables={SourceInventory.TableRowCounts.Count}, Oracle counts={(TargetInventory.TableRowCounts?.Count ?? 0)}</td></tr>");
+        sb.AppendLine($"<tr><td>Keys/Invalid objects</td><td class='{(Issues.Any(i => i.Category.Contains("PrimaryKey", StringComparison.OrdinalIgnoreCase) || i.Category.Contains("Invalid", StringComparison.OrdinalIgnoreCase) || i.Category.Contains("Compile", StringComparison.OrdinalIgnoreCase)) ? "warn" : "")}'>{(Options.IncludeKeyAndInvalidChecks ? (Issues.Any(i => i.Category.Contains("PrimaryKey", StringComparison.OrdinalIgnoreCase) || i.Category.Contains("Invalid", StringComparison.OrdinalIgnoreCase) || i.Category.Contains("Compile", StringComparison.OrdinalIgnoreCase)) ? "Review" : "OK") : "Skipped")}</td><td>PK/invalid checks enabled={Options.IncludeKeyAndInvalidChecks}</td></tr>");
+        sb.AppendLine("</table>");
+
+        // Row count details
+        if (Options.IncludeRowCounts && SourceInventory.TableRowCounts.Count > 0)
+        {
+            sb.AppendLine("<h3>Row Count Comparison</h3>");
+            sb.AppendLine("<table><tr><th>Table</th><th>SQL Rows</th><th>Oracle Table</th><th>Oracle Rows</th><th>Delta</th><th>Status</th></tr>");
+            foreach (var kvp in SourceInventory.TableRowCounts.OrderBy(k => k.Key, StringComparer.OrdinalIgnoreCase))
+            {
+                var key = kvp.Key;
+                var sqlRows = kvp.Value;
+                var oraRows = TargetInventory.TableRowCounts.TryGetValue(key, out var v) ? (long?)v : null;
+                var oraName = ResolvedOracleTables.TryGetValue(key, out var r) ? r : "(unresolved)";
+                var delta = oraRows.HasValue ? (oraRows.Value - sqlRows) : (long?)null;
+                var status = oraRows.HasValue ? (delta == 0 ? "OK" : "Mismatch") : "Unavailable";
+                var cls = status == "Mismatch" ? "err" : (status == "Unavailable" ? "warn" : "");
+                sb.AppendLine($"<tr><td>{System.Net.WebUtility.HtmlEncode(key)}</td><td>{sqlRows}</td><td>{System.Net.WebUtility.HtmlEncode(oraName)}</td><td>{(oraRows.HasValue ? oraRows.Value.ToString() : "-")}</td><td>{(delta.HasValue ? delta.Value.ToString() : "-")}</td><td class='{cls}'>{status}</td></tr>");
+            }
+            sb.AppendLine("</table>");
+        }
 
         sb.AppendLine("<h3>Issues</h3>");
         sb.AppendLine("<table><tr><th>Severity</th><th>Category</th><th>Schema</th><th>Name</th><th>Type</th><th>Message</th></tr>");

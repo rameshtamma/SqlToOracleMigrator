@@ -250,7 +250,7 @@ try
         selectCmd.CommandTimeout = 0;
 
         var schemaPrefix = OracleIdent.FormatSchema(targetSchema);
-        var insertSql = $"INSERT INTO {schemaPrefix}.{OracleIdent.FormatObject(table, preferUnquotedUpper)} ({string.Join(",", targetColNames.Select(OracleIdent.QuoteIdent))}) VALUES ({string.Join(",", targetColNames.Select((c, i) => $":p{i}"))})";
+        var insertSql = $"INSERT INTO {schemaPrefix}.{OracleIdent.FormatObject(table, preferUnquotedUpper)} ({string.Join(",", targetColNames.Select(c => OracleIdent.FormatObject(c, preferUnquotedUpper)))}) VALUES ({string.Join(",", targetColNames.Select((c, i) => $":p{i}"))})";
 
         await using var txn = openOra.BeginTransaction();
         await using var insertCmd = new OracleCommand(insertSql, openOra)
@@ -595,7 +595,7 @@ private async Task ValidateTableDataAsync(
         selectCmd.CommandTimeout = 0;
 
         var schemaPrefix = OracleIdent.FormatSchema(targetSchema);
-        var insertSql = $"INSERT INTO {schemaPrefix}.{OracleIdent.FormatObject(table, preferUnquotedUpper)} ({string.Join(",", targetColNames.Select(OracleIdent.QuoteIdent))}) VALUES ({string.Join(",", targetColNames.Select((c, i) => $":p{i}"))})";
+        var insertSql = $"INSERT INTO {schemaPrefix}.{OracleIdent.FormatObject(table, preferUnquotedUpper)} ({string.Join(",", targetColNames.Select(c => OracleIdent.FormatObject(c, preferUnquotedUpper)))}) VALUES ({string.Join(",", targetColNames.Select((c, i) => $":p{i}"))})";
 
         await using var txn = openOra.BeginTransaction();
         await using var insertCmd = new OracleCommand(insertSql, openOra)

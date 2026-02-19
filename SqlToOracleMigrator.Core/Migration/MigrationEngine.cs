@@ -12,6 +12,10 @@ namespace SqlToOracleMigrator.Core;
 
 public sealed partial class MigrationEngine
 {
+    // Exposed for Desktop UI to link to the most recent run artifacts (RunSummary.html, reports, etc.).
+    public Guid? LastRunId { get; private set; }
+    public string? LastRunDirectory { get; private set; }
+
     private readonly ConnectionManager _connMgr;
     private readonly SqlServerMetadataProvider _sqlMeta;
     private readonly OracleMetadataProvider _oraMeta;
@@ -168,7 +172,9 @@ public sealed partial class MigrationEngine
         }
 
         var runId = run.RunId;
+        LastRunId = runId;
         var runDir = _paths.GetRunDirectory(runId, run.StartedAt.ToLocalTime());
+        LastRunDirectory = runDir;
         Directory.CreateDirectory(runDir);
 
         var convertLogPath = Path.Combine(runDir, "Convert_ToOracle.log");

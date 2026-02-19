@@ -13,6 +13,7 @@ public sealed partial class MigrationEngine
         IReadOnlyList<SqlForeignKeyDef> foreignKeys,
         Func<string, string> schemaMapper,
         bool enableNoValidate,
+        bool preferUnquotedUppercaseIdentifiers,
         CancellationToken ct)
     {
         var errors = new List<StageError>();
@@ -32,17 +33,17 @@ public sealed partial class MigrationEngine
 
                 var parentSchemaQ = OracleIdent.FormatSchema(parentSchema);
                 var refSchemaQ = OracleIdent.FormatSchema(refSchema);
-                var parentTableQ = OracleIdent.QuoteIdent(fk.TableName);
-                var refTableQ = OracleIdent.QuoteIdent(fk.RefTableName);
+                var parentTableQ = OracleIdent.FormatObject(fk.TableName, preferUnquotedUppercaseIdentifiers);
+                var refTableQ = OracleIdent.FormatObject(fk.RefTableName, preferUnquotedUppercaseIdentifiers);
 
                 // Cross-schema FK creation requires the child schema to have REFERENCES on the parent table.
                 // If we deploy constraints using an admin connection (SYS/PDBADMIN), Oracle still validates object privileges.
                 // Without the grant, Oracle often reports ORA-00942 (table or view does not exist) for the referenced table.
                 await EnsureFkGrantsAsync(openOra, refSchemaQ, refTableQ, parentSchemaQ, grantCache, ct);
 
-                var fkNameQ = OracleIdent.QuoteIdent(fk.Name);
-                var parentCols = string.Join(",", fk.Columns.Select(c => OracleIdent.QuoteIdent(c.ColumnName)));
-                var refCols = string.Join(",", fk.Columns.Select(c => OracleIdent.QuoteIdent(c.RefColumnName)));
+                var fkNameQ = OracleIdent.FormatObject(fk.Name, preferUnquotedUppercaseIdentifiers);
+                var parentCols = string.Join(",", fk.Columns.Select(c => OracleIdent.FormatObject(c.ColumnName, preferUnquotedUppercaseIdentifiers)));
+                var refCols = string.Join(",", fk.Columns.Select(c => OracleIdent.FormatObject(c.RefColumnName, preferUnquotedUppercaseIdentifiers)));
 
                 // Drop existing constraint (if any)
                 var drop = $"BEGIN EXECUTE IMMEDIATE 'ALTER TABLE {parentSchemaQ}.{parentTableQ} DROP CONSTRAINT {fkNameQ}'; EXCEPTION WHEN OTHERS THEN NULL; END;";

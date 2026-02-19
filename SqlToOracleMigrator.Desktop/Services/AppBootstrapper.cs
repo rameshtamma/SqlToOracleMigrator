@@ -39,12 +39,17 @@ public sealed class AppBootstrapper : IDisposable
         var connTypes = new JsonListStore(Path.Combine(paths.ConfigDirectory, "connection_types.json")).LoadStrings();
 
         _services = new AppServices(paths, protector, store, queryStore, mappingConfig, logger, connMgr, sqlMeta, oraMeta, inv, engine, toolMig, authTypes, connTypes);
+
+        // Make services available to windows that may be created without DI wiring.
+        AppServicesLocator.Current = _services;
     }
 
     public void Dispose()
     {
         _services?.Dispose();
         _services = null;
+
+        AppServicesLocator.Current = null;
     }
 
     private static void TryApplyLimits(AppPaths paths, ConnectionManager connMgr, IAppLogger logger)

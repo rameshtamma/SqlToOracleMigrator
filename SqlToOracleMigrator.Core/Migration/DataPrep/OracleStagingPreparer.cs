@@ -17,7 +17,8 @@ public sealed class OracleStagingPreparer
         string table,
         IReadOnlyList<(string ColumnName, string SqlTypeName, bool IsNullable)> sourceColumns,
         bool relaxNotNullOnStagedColumns,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool preferUnquotedUppercaseIdentifiers = true)
     {
         // Stage policy:
         // - XML: add <col>__XML CLOB
@@ -25,7 +26,7 @@ public sealed class OracleStagingPreparer
         // - Relax NOT NULL on main column to allow staging load; stage 9 will enforce.
 
         var schemaQ = OracleIdent.FormatSchema(targetSchema);
-        var tableQ = OracleIdent.QuoteIdent(table);
+        var tableQ = OracleIdent.FormatObject(table, preferUnquotedUppercaseIdentifiers);
 
         foreach (var c in sourceColumns)
         {
@@ -33,28 +34,28 @@ public sealed class OracleStagingPreparer
 
             if (c.SqlTypeName.Equals("xml", StringComparison.OrdinalIgnoreCase))
             {
-                var stageCol = OracleIdent.QuoteIdent(colName + "__XML");
+                var stageCol = OracleIdent.FormatObject(colName + "__XML", preferUnquotedUppercaseIdentifiers);
                 await _ddl.ExecuteIdempotentAsync($"ALTER TABLE {schemaQ}.{tableQ} ADD ({stageCol} CLOB)", ct);
 
                 if (relaxNotNullOnStagedColumns)
                 {
                     // Make main column nullable (it will be populated in Stage 9).
-                    var mainCol = OracleIdent.QuoteIdent(colName);
+                    var mainCol = OracleIdent.FormatObject(colName, preferUnquotedUppercaseIdentifiers);
                     await _ddl.ExecuteIdempotentAsync($"ALTER TABLE {schemaQ}.{tableQ} MODIFY ({mainCol} NULL)", ct);
                 }
             }
 
             if (c.SqlTypeName.Equals("geography", StringComparison.OrdinalIgnoreCase) || c.SqlTypeName.Equals("geometry", StringComparison.OrdinalIgnoreCase))
             {
-                var wkb = OracleIdent.QuoteIdent(colName + "__WKB");
-                var srid = OracleIdent.QuoteIdent(colName + "__SRID");
+                var wkb = OracleIdent.FormatObject(colName + "__WKB", preferUnquotedUppercaseIdentifiers);
+                var srid = OracleIdent.FormatObject(colName + "__SRID", preferUnquotedUppercaseIdentifiers);
 
                 await _ddl.ExecuteIdempotentAsync($"ALTER TABLE {schemaQ}.{tableQ} ADD ({wkb} BLOB)", ct);
                 await _ddl.ExecuteIdempotentAsync($"ALTER TABLE {schemaQ}.{tableQ} ADD ({srid} NUMBER(10))", ct);
 
                 if (relaxNotNullOnStagedColumns)
                 {
-                    var mainCol = OracleIdent.QuoteIdent(colName);
+                    var mainCol = OracleIdent.FormatObject(colName, preferUnquotedUppercaseIdentifiers);
                     await _ddl.ExecuteIdempotentAsync($"ALTER TABLE {schemaQ}.{tableQ} MODIFY ({mainCol} NULL)", ct);
                 }
             }

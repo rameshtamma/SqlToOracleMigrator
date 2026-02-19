@@ -41,14 +41,36 @@ public sealed class SchemaBuildDdlBundle
             cur.Clear();
         }
 
+        // Header detection guardrails:
+        // - Only treat a comment line as a new-object header if it begins with a known object token
+        //   (TABLE/VIEW/PROCEDURE/...) OR if it uses the explicit marker "-- @OBJ".
+        // - Do NOT treat ordinary comments inside DDL as headers (root cause of false ORA-06550/PLS-00103).
+        static bool IsHeader(string line, out string header)
+        {
+            header = string.Empty;
+            if (!line.StartsWith("-- ")) return false;
+            var h = line.Substring(3).Trim();
+            if (h.StartsWith("@OBJ", StringComparison.OrdinalIgnoreCase))
+            {
+                header = h.Substring(4).Trim();
+                return true;
+            }
+            // legacy header format: "TYPE SCHEMA.NAME"
+            var first = h.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? string.Empty;
+            var token = first.ToUpperInvariant();
+            var known = token is "TABLE" or "VIEW" or "PROCEDURE" or "FUNCTION" or "TRIGGER" or "INDEX" or "CONSTRAINT" or "TYPE" or "SEQUENCE" or "SYNONYM" or "PACKAGE" or "DDL";
+            if (!known) return false;
+            header = h;
+            return true;
+        }
+
         foreach (var raw in lines)
         {
             var line = raw.TrimEnd('\r');
-            if (line.StartsWith("-- "))
+            if (IsHeader(line, out var hdr))
             {
                 // header starts a new statement
                 Flush();
-                var hdr = line.Substring(3).Trim();
                 var parts = hdr.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
                 type = parts.Length > 0 ? parts[0].Trim() : null;
                 schema = null; name = null;

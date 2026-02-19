@@ -123,14 +123,15 @@ public static class OracleDdlGenerator
     /// This avoids ORA-01400 during Stage 8 DataValidation dry-runs and during bulk loads.
     /// </summary>
     public static string CreateTableDdl(string targetSchema, string tableName, IReadOnlyList<SqlTableColumn> columns, SqlToOracleTypeMapper mapper)
-        => CreateTableDdl(targetSchema, tableName, columns, mapper, enableSpatialXmlStaging: true);
+        => CreateTableDdl(targetSchema, tableName, columns, mapper, enableSpatialXmlStaging: true, preferUnquotedUppercaseIdentifiers: true);
 
     public static string CreateTableDdl(
         string targetSchema,
         string tableName,
         IReadOnlyList<SqlTableColumn> columns,
         SqlToOracleTypeMapper mapper,
-        bool enableSpatialXmlStaging)
+        bool enableSpatialXmlStaging,
+        bool preferUnquotedUppercaseIdentifiers = true)
     {
         if (string.IsNullOrWhiteSpace(targetSchema)) throw new ArgumentNullException(nameof(targetSchema));
         if (string.IsNullOrWhiteSpace(tableName)) throw new ArgumentNullException(nameof(tableName));
@@ -139,13 +140,13 @@ public static class OracleDdlGenerator
         // Schema/user should typically be unquoted (Oracle resolves unquoted identifiers as UPPERCASE).
         // Quoting a normal username (e.g., "system") makes it case-sensitive and commonly fails.
         var schemaQ = OracleIdent.FormatSchema(targetSchema);
-        var tableQ = OracleIdent.QuoteIdent(tableName);
+        var tableQ = OracleIdent.FormatObject(tableName, preferUnquotedUppercaseIdentifiers);
 
         var colLines = new List<string>();
 
         foreach (var c in columns.OrderBy(c => c.Ordinal))
         {
-            var colQ = OracleIdent.QuoteIdent(c.ColumnName);
+            var colQ = OracleIdent.FormatObject(c.ColumnName, preferUnquotedUppercaseIdentifiers);
             var oracleType = mapper.Map(c.SqlTypeName, c.MaxLength, c.Precision, c.Scale);
             var def = OracleDefaultConverter.Convert(c.DefaultDefinition, targetSchema);
             var defClause = string.IsNullOrWhiteSpace(def) ? "" : $" DEFAULT {def}";
@@ -169,13 +170,13 @@ public static class OracleDdlGenerator
             if (isXml)
             {
                 // XMLTYPE conversion source is a CLOB holding XML text.
-                colLines.Add($"{OracleIdent.QuoteIdent(c.ColumnName + "__XML")} CLOB");
+                colLines.Add($"{OracleIdent.FormatObject(c.ColumnName + "__XML", preferUnquotedUppercaseIdentifiers)} CLOB");
             }
             else if (isSpatial)
             {
                 // WKB blob + SRID used to create SDO_GEOMETRY in Stage 9.
-                colLines.Add($"{OracleIdent.QuoteIdent(c.ColumnName + "__WKB")} BLOB");
-                colLines.Add($"{OracleIdent.QuoteIdent(c.ColumnName + "__SRID")} NUMBER(10)");
+                colLines.Add($"{OracleIdent.FormatObject(c.ColumnName + "__WKB", preferUnquotedUppercaseIdentifiers)} BLOB");
+                colLines.Add($"{OracleIdent.FormatObject(c.ColumnName + "__SRID", preferUnquotedUppercaseIdentifiers)} NUMBER(10)");
             }
         }
 

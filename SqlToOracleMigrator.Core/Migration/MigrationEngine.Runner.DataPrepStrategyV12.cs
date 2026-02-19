@@ -85,7 +85,7 @@ public sealed partial class MigrationEngine
                             var cols = await ctx.Engine._sqlMeta.GetTableColumnsAsync(ctx.OpenSql, ctx.Request.SourceDatabase, t.Schema, t.Table, ct);
                             var srcCols = cols.Select(c => (c.ColumnName, c.SqlTypeName, c.IsNullable)).ToList();
                             var prep = new OracleStagingPreparer(ctx.OpenOra);
-                            await prep.EnsureStagingForTableAsync(ctx.GetTargetSchema(t.Schema), t.Table, srcCols, tableStrat.RelaxNotNullOnStagedColumns, ct);
+                            await prep.EnsureStagingForTableAsync(ctx.GetTargetSchema(t.Schema), t.Table, srcCols, tableStrat.RelaxNotNullOnStagedColumns, ct, ctx.Request.UseUnquotedUppercaseIdentifiers);
                         }
 
                         // Findings

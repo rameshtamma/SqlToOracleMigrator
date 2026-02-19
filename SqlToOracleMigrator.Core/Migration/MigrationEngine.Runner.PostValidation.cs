@@ -86,7 +86,13 @@ public sealed partial class MigrationEngine
                 ctx.AppendLog($"[PostValidation] Deploying foreign keys ({ctx.ForeignKeys.Count})...");
                 try
                 {
-                    var fkErrors = await ctx.Engine.DeployForeignKeysAsync(ctx.OpenOra, ctx.ForeignKeys, ctx.GetTargetSchema, ctx.Request.ForeignKeysEnableNoValidate, ct);
+                    var fkErrors = await ctx.Engine.DeployForeignKeysAsync(
+                        ctx.OpenOra,
+                        ctx.ForeignKeys,
+                        ctx.GetTargetSchema,
+                        ctx.Request.ForeignKeysEnableNoValidate,
+                        ctx.Request.UseUnquotedUppercaseIdentifiers,
+                        ct);
                     errors.AddRange(fkErrors);
                 }
                 catch (Exception ex)

@@ -1,4 +1,7 @@
 using System.Collections.ObjectModel;
+using System.Diagnostics;
+using System.IO;
+using System.Linq;
 using System.Windows;
 using SqlToOracleMigrator.Core;
 using SqlToOracleMigrator.Core.Tracking;
@@ -585,6 +588,42 @@ public sealed class ToolDesignWizardViewModel : NotifyBase
                 try
                 {
                     await _services.MigrationEngine.RunDatabaseMigrationAsync(request, CancellationToken.None);
+                    // Success UX: open RunSummary.html and offer validation in one click.
+                    try
+                    {
+                        var runDir = _services.MigrationEngine.LastRunDirectory;
+                        var runSummary = !string.IsNullOrWhiteSpace(runDir) ? Path.Combine(runDir!, "RunSummary.html") : null;
+                        if (runSummary is not null && File.Exists(runSummary))
+                        {
+                            Application.Current.Dispatcher.Invoke(() =>
+                            {
+                                try
+                                {
+                                    Process.Start(new ProcessStartInfo { FileName = runSummary, UseShellExecute = true });
+                                }
+                                catch
+                                {
+                                    // ignore shell failures; still show message below
+                                }
+
+                                var msg = $"Migration completed successfully.\n\nReport: {runSummary}\n\nWould you like to run 'Validate Migration' now?";
+                                var choice = MessageBox.Show(msg, "SqlToOracleMigrator", MessageBoxButton.YesNo, MessageBoxImage.Information);
+                                if (choice == MessageBoxResult.Yes)
+                                {
+                                    OpenValidateMigrationWindow(runDir, request.SourceSqlConnection, request.TargetOracleConnection, request.SourceDatabase);
+                                }
+                            });
+                        }
+                        else
+                        {
+                            Application.Current.Dispatcher.Invoke(() =>
+                                MessageBox.Show("Migration completed successfully. (RunSummary.html not found for this run.)", "SqlToOracleMigrator", MessageBoxButton.OK, MessageBoxImage.Information));
+                        }
+                    }
+                    catch
+                    {
+                        // Do not fail a successful migration due to UI/report UX.
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -897,4 +936,30 @@ public sealed class ToolDesignWizardViewModel : NotifyBase
     }
 
 
+
+    private void OpenValidateMigrationWindow(string? runDir, ConnectionDefinition sourceSql, ConnectionDefinition targetOra, string sourceDb)
+    {
+        Application.Current.Dispatcher.Invoke(() =>
+        {
+            try
+            {
+                var vm = new ValidateMigrationViewModel();
+                vm.Initialize(_services);
+                // Preselect connections and database used for the run.
+                vm.SelectedSqlConnection = vm.SqlConnections.FirstOrDefault(c => string.Equals(c.Name, sourceSql.Name, StringComparison.OrdinalIgnoreCase)) ?? sourceSql;
+                vm.SelectedOracleConnection = vm.OracleConnections.FirstOrDefault(c => string.Equals(c.Name, targetOra.Name, StringComparison.OrdinalIgnoreCase)) ?? targetOra;
+                vm.SourceDatabase = sourceDb;
+                vm.SelectedSourceDatabase = sourceDb;
+                // If we have a run directory, use it as the default output folder and to link back to RunSummary.html.
+                if (!string.IsNullOrWhiteSpace(runDir)) vm.ReportOutputFolder = runDir!;
+
+                var win = new ValidateMigrationWindow(_services) { DataContext = vm, Owner = Application.Current.MainWindow };
+                win.Show();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Unable to open Validate Migration window: {ex.Message}", "SqlToOracleMigrator", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        });
+    }
 }

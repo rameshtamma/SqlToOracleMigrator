@@ -32,6 +32,7 @@ public sealed class MainViewModel : NotifyBase
     public AsyncRelayCommand ValidateMigrationCommand { get; private set; } = new(async () => await Task.CompletedTask);
     public RelayCommand OpenLogsFolderCommand { get; private set; } = new(() => { });
     public RelayCommand ClearLogsCommand { get; private set; } = new(() => { });
+    public RelayCommand CloseAppCommand { get; private set; } = new(() => { });
 
     private AppServices? _services;
 
@@ -59,30 +60,63 @@ public sealed class MainViewModel : NotifyBase
         ValidateMigrationCommand = new AsyncRelayCommand(OpenValidateMigrationAsync);
         OpenLogsFolderCommand = new RelayCommand(OpenLogsFolder);
         ClearLogsCommand = new RelayCommand(() => LogEntries.Clear());
+        CloseAppCommand = new RelayCommand(() =>
+        {
+            try { Application.Current?.MainWindow?.Close(); }
+            catch { Application.Current?.Shutdown(); }
+        });
 
         // Subscribe logs
-        _services.Logger.EntryWritten += (_, e) =>
-        {
-            Application.Current.Dispatcher.Invoke(() =>
-            {
-                var line = $"{e.Timestamp:HH:mm:ss} [{e.Level}] {e.Message}";
-                LogEntries.Add(line);
-                if (LogEntries.Count > 5000) LogEntries.RemoveAt(0);
-            });
-        };
+        _services.Logger.EntryWritten += Logger_EntryWritten;
 
         // Subscribe migration progress
-        _services.MigrationEngine.Progress += (_, p) =>
-        {
-            Application.Current.Dispatcher.Invoke(() =>
-            {
-                MigrationStageText = $"{p.Stage}: {p.Message}";
-                MigrationProgressPercent = (p.Percent ?? 0) * 100.0;
-            });
-        };
+        _services.MigrationEngine.Progress += MigrationEngine_Progress;
 
         LoadConnectionsTree();
         AppendLog("Application initialized.");
+    }
+
+    /// <summary>
+    /// Best-effort shutdown hook invoked by MainWindow.Closing.
+    /// Cancels background work, unsubscribes event handlers, and releases connections.
+    /// </summary>
+    public async Task ShutdownAsync()
+    {
+        try
+        {
+            if (_services is not null)
+            {
+                _services.Logger.EntryWritten -= Logger_EntryWritten;
+                _services.MigrationEngine.Progress -= MigrationEngine_Progress;
+            }
+        }
+        catch { }
+
+        try
+        {
+            // ConnectionManager does not expose an async bulk-disconnect; dispose closes all active connections.
+            _services?.ConnectionManager.Dispose();
+        }
+        catch { }
+    }
+
+    private void Logger_EntryWritten(object? sender, LogEntry e)
+    {
+        Application.Current.Dispatcher.Invoke(() =>
+        {
+            var line = $"{e.Timestamp:HH:mm:ss} [{e.Level}] {e.Message}";
+            LogEntries.Add(line);
+            if (LogEntries.Count > 5000) LogEntries.RemoveAt(0);
+        });
+    }
+
+    private void MigrationEngine_Progress(object? sender, MigrationProgress p)
+    {
+        Application.Current.Dispatcher.Invoke(() =>
+        {
+            MigrationStageText = $"{p.Stage}: {p.Message}";
+            MigrationProgressPercent = (p.Percent ?? 0) * 100.0;
+        });
     }
 
 

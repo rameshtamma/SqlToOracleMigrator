@@ -16,6 +16,37 @@ public static class SqlIdent
 
 public static class OracleIdent
 {
+// Minimal-but-practical Oracle reserved words list.
+// If an identifier matches one of these (case-insensitive), it must be quoted.
+// Keep this list easy to extend as we encounter additional collisions.
+private static readonly string[] ReservedWords = new[]
+{
+    // Core SQL / Oracle keywords
+    "ACCESS","ADD","ALL","ALTER","AND","ANY","AS","ASC","AUDIT","BETWEEN","BY",
+    "CHAR","CHECK","CLUSTER","COLUMN","COMMENT","COMPRESS","CONNECT","CREATE","CURRENT",
+    "DATE","DECIMAL","DEFAULT","DELETE","DESC","DISTINCT","DROP",
+    "ELSE","EXCLUSIVE","EXISTS",
+    "FILE","FLOAT","FOR","FROM",
+    "GRANT","GROUP",
+    "HAVING",
+    "IDENTIFIED","IMMEDIATE","IN","INCREMENT","INDEX","INITIAL","INSERT","INTEGER","INTERSECT","INTO","IS",
+    "LEVEL","LIKE","LOCK",
+    "LONG",
+    "MAXEXTENTS","MINUS","MODE","MODIFY",
+    "NOAUDIT","NOCOMPRESS","NOT","NOWAIT","NULL","NUMBER",
+    "OF","OFFLINE","ON","ONLINE","OPTION","OR","ORDER",
+    "PCTFREE","PRIOR","PRIVILEGES","PUBLIC",
+    "RAW","RENAME","RESOURCE","REVOKE","ROW","ROWID","ROWNUM","ROWS",
+    "SELECT","SESSION","SET","SHARE","SIZE","SMALLINT","START","SYNONYM",
+    "TABLE","THEN","TO","TRIGGER",
+    "UID","UNION","UNIQUE","UPDATE","USER",
+    "VALIDATE","VALUES","VARCHAR","VARCHAR2","VIEW",
+    "WHENEVER","WHERE","WITH"
+};
+
+private static readonly System.Collections.Generic.HashSet<string> Reserved =
+    new System.Collections.Generic.HashSet<string>(ReservedWords, StringComparer.OrdinalIgnoreCase);
+
     /// <summary>
     /// Force-quotes an identifier and escapes embedded double-quotes by doubling them.
     /// </summary>
@@ -76,6 +107,9 @@ public static class OracleIdent
         // Must start with a letter.
         if (!char.IsLetter(n[0])) return false;
 
+
+        // Reserved words must be quoted, even if they otherwise match the identifier pattern.
+        if (Reserved.Contains(n)) return false;
         for (int i = 1; i < n.Length; i++)
         {
             var c = n[i];

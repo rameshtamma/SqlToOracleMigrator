@@ -123,8 +123,19 @@ public sealed class ValidateMigrationViewModel : NotifyBase
         foreach (var d in defs.Where(d => d.Engine == DatabaseEngine.Oracle).OrderByDescending(d => d.LastTestUtc ?? DateTimeOffset.MinValue))
             OracleConnections.Add(d);
 
-        SelectedSqlConnection = SqlConnections.FirstOrDefault();
-        SelectedOracleConnection = OracleConnections.FirstOrDefault();
+        // Prefer currently-connected connections (so validation reuses the same authenticated sessions
+        // the user already connected with in the main workflow). This avoids accidentally defaulting
+        // to another saved connection (e.g., an older SA-based profile).
+        var connectedSql = services.ConnectionManager.GetConnected(DatabaseEngine.SqlServer).FirstOrDefault();
+        var connectedOra = services.ConnectionManager.GetConnected(DatabaseEngine.Oracle).FirstOrDefault();
+
+        SelectedSqlConnection = connectedSql is not null
+            ? SqlConnections.FirstOrDefault(c => string.Equals(c.Name, connectedSql.Name, StringComparison.OrdinalIgnoreCase))
+            : SqlConnections.FirstOrDefault();
+
+        SelectedOracleConnection = connectedOra is not null
+            ? OracleConnections.FirstOrDefault(c => string.Equals(c.Name, connectedOra.Name, StringComparison.OrdinalIgnoreCase))
+            : OracleConnections.FirstOrDefault();
 
         // Default DB name from SQL connection if present.
         SourceDatabase = SelectedSqlConnection?.DefaultDatabase ?? "";
@@ -227,6 +238,22 @@ public sealed class ValidateMigrationViewModel : NotifyBase
             StatusText = $"Validation failed: {ex.Message}";
             ProgressPercent = 0;
             _services.Logger.Error("Post migration validation failed.", ex);
+
+            // Also emit a standalone failure log file in the output folder so the user has a durable artifact
+            // even if app-level logging sinks are misconfigured.
+            try
+            {
+                var outDir = string.IsNullOrWhiteSpace(ReportOutputFolder) ? _services.Paths.LogsDirectory : ReportOutputFolder;
+                Directory.CreateDirectory(outDir);
+                var ts = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+                var failPath = Path.Combine(outDir, $"PostMigrationValidation_FAILED_{ts}.log");
+                await File.WriteAllTextAsync(failPath, ex.ToString());
+            }
+            catch
+            {
+                // best-effort
+            }
+
             MessageBox.Show(ex.ToString(), "Validation failed", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }

@@ -334,22 +334,22 @@ ORDER BY ix.name, ic.key_ordinal;";
         return list;
     }
 
-    private static string BuildOracleConstraintDdl(string targetSchema, string table, SqlKeyConstraint k)
+    private static string BuildOracleConstraintDdl(string targetSchema, string table, SqlKeyConstraint k, bool preferUnquotedUppercaseIdentifiers = true)
     {
         var schemaQ = OracleIdent.FormatSchema(targetSchema);
-        var tableQ = OracleIdent.QuoteIdent(table);
-        var cols = string.Join(",", k.Columns.Select(OracleIdent.QuoteIdent));
+        var tableQ = OracleIdent.FormatObject(table, preferUnquotedUppercaseIdentifiers);
+        var cols = string.Join(",", k.Columns.Select(c => OracleIdent.FormatObject(c, preferUnquotedUppercaseIdentifiers)));
 
         var kind = k.Type.Equals("PK", StringComparison.OrdinalIgnoreCase) ? "PRIMARY KEY" : "UNIQUE";
         var nameQ = OracleIdent.QuoteIdent(k.Name);
         return $"ALTER TABLE {schemaQ}.{tableQ} ADD CONSTRAINT {nameQ} {kind} ({cols})";
     }
 
-    private static string BuildOracleIndexDdl(string targetSchema, string table, SqlIndexDef ix)
+    private static string BuildOracleIndexDdl(string targetSchema, string table, SqlIndexDef ix, bool preferUnquotedUppercaseIdentifiers = true)
     {
         var schemaQ = OracleIdent.FormatSchema(targetSchema);
-        var tableQ = OracleIdent.QuoteIdent(table);
-        var cols = string.Join(",", ix.KeyColumns.Select(OracleIdent.QuoteIdent));
+        var tableQ = OracleIdent.FormatObject(table, preferUnquotedUppercaseIdentifiers);
+        var cols = string.Join(",", ix.KeyColumns.Select(c => OracleIdent.FormatObject(c, preferUnquotedUppercaseIdentifiers)));
         var uniq = ix.IsUnique ? "UNIQUE " : string.Empty;
         var nameQ = OracleIdent.QuoteIdent(ix.Name);
         return $"CREATE {uniq}INDEX {schemaQ}.{nameQ} ON {schemaQ}.{tableQ} ({cols})";
@@ -358,7 +358,8 @@ ORDER BY ix.name, ic.key_ordinal;";
     private static async Task DropOracleConstraintIfExistsAsync(OracleConnection openOra, string targetSchema, string table, string constraintName, CancellationToken ct)
     {
         var schemaQ = OracleIdent.FormatSchema(targetSchema);
-        var tableQ = OracleIdent.QuoteIdent(table);
+        // Use a conservative default (prefer unquoted) so DROP works for both unquoted and quoted table names.
+        var tableQ = OracleIdent.FormatObject(table, true);
         var cQ = OracleIdent.QuoteIdent(constraintName);
         var plsql = $"BEGIN EXECUTE IMMEDIATE 'ALTER TABLE {schemaQ}.{tableQ} DROP CONSTRAINT {cQ}'; EXCEPTION WHEN OTHERS THEN NULL; END;";
         await using var cmd = new OracleCommand(plsql, openOra);

@@ -20,4 +20,9 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
   </ItemGroup>
+  <ItemGroup>
+    <!-- Ensure ViewModels are compiled even if default compile items are customized -->
+    <Compile Update="ViewModels\**\*.cs" />
+  </ItemGroup>
+
 </Project>

@@ -6,6 +6,7 @@ using SqlToOracleMigrator.Core.Oracle;
 using SqlToOracleMigrator.Core.Tracking;
 using System.Text;
 using System.Text.Json;
+using System.IO.Compression;
 
 namespace SqlToOracleMigrator.Core;
 
@@ -41,6 +42,38 @@ public sealed partial class MigrationEngine
                 var composer = new SchemaBuildDdlComposer(ctx.Engine);
                 var bundle = await composer.ComposeAsync(ctx, ct);
 
+                // Guardrail: if discovery found objects but composer produced no statements, fail early.
+                if (ctx.Tables.Count > 0 && bundle.Statements.Count == 0)
+                {
+                    errors.Add(new StageError(Stage.ToString(), "", "", "NoDdlGenerated",
+                        $"DDL composer produced 0 statements for {ctx.Tables.Count} discovered table(s). This would cause ORA-00942 during data load.",
+                        "Ensure discovery populated ctx.Tables and SchemaBuildDdlComposer is generating table DDL."));
+                    throw new StageFailedException(Stage, errors);
+                }
+
+                // Persist combined DDL to the run folder for easy inspection.
+                // (ToolMig artifacts are great, but end users expect a file next to the logs.)
+                try
+                {
+                    var ddlPath = Path.Combine(ctx.RunDir, "SchemaBuild_DDL.sql");
+                    await File.WriteAllTextAsync(ddlPath, bundle.CombinedSql ?? string.Empty, ct);
+
+                    // Also create a lightweight zip for easy sharing.
+                    var zipPath = Path.Combine(ctx.RunDir, "SchemaBuild_DDL.zip");
+                    if (File.Exists(zipPath)) File.Delete(zipPath);
+                    using (var zip = ZipFile.Open(zipPath, ZipArchiveMode.Create))
+                    {
+                        zip.CreateEntryFromFile(ddlPath, "SchemaBuild_DDL.sql", CompressionLevel.Optimal);
+                    }
+
+                    // Update the run HTML index (best-effort).
+                    ctx.Engine.UpdateRunIndexHtml(ctx.RunDir);
+                }
+                catch
+                {
+                    // best effort; do not fail stage
+                }
+
                 // Validate each statement (parse-only) to catch ORA-00904, ORA-00910, etc.
                 var validator = new OracleDdlValidator(ctx.OpenOra);
                 var validation = await validator.ValidateBundleAsync(bundle, ct);
@@ -72,6 +105,9 @@ public sealed partial class MigrationEngine
 
                 await ctx.ToolMigStageAsync(Stage, "Completed", "DDL validated", 0);
                 ctx.AppendLog($"[{Stage}] Completed.");
+
+                // Refresh the run index page after a successful stage.
+                ctx.Engine.UpdateRunIndexHtml(ctx.RunDir);
             }
             catch (StageFailedException sfe)
             {
@@ -92,6 +128,7 @@ public sealed partial class MigrationEngine
                 var errs = errors.Count > 0 ? errors : new List<StageError> { StageError.FromException(Stage, "", "", ex) };
                 await ctx.ToolMigStageAsync(Stage, "Failed", ex.Message, errs.Count);
                 ctx.Engine.WriteStageReport(ctx.RunDir, Stage.ToString(), errs);
+                ctx.Engine.UpdateRunIndexHtml(ctx.RunDir);
                 throw;
             }
         }
@@ -207,16 +244,32 @@ public sealed partial class MigrationEngine
                     }
                 }
 
+                // Post-check: ensure tables exist before data migration.
+                // This prevents silent no-op deployments from flowing into ORA-00942 during bulk copy.
+                var missing = await ctx.Engine.FindMissingTargetTablesAsync(ctx.OpenOra, ctx, ct);
+                foreach (var m in missing)
+                {
+                    errors.Add(new StageError(Stage.ToString(), m.TargetSchema, m.Table, "MissingTargetTable",
+                        $"Target table {m.TargetSchema}.{m.Table} was not found after schema deployment.",
+                        "Check SchemaBuild_DDL.sql and Oracle privileges; ensure DDL executed and committed."));
+                }
+
+                if (errors.Count > 0)
+                    throw new StageFailedException(Stage, errors);
+
                 if (errors.Count > 0)
                     throw new StageFailedException(Stage, errors);
 
                 await ctx.ToolMigStageAsync(Stage, "Completed", "DDL deployed", 0);
                 ctx.AppendLog($"[{Stage}] Completed.");
+
+                ctx.Engine.UpdateRunIndexHtml(ctx.RunDir);
             }
             catch (StageFailedException sfe)
             {
                 await ctx.ToolMigStageAsync(Stage, "Failed", sfe.Message, sfe.Errors.Count);
                 ctx.Engine.WriteStageReport(ctx.RunDir, Stage.ToString(), sfe.Errors);
+                ctx.Engine.UpdateRunIndexHtml(ctx.RunDir);
                 throw;
             }
             catch (Exception ex)
@@ -224,6 +277,7 @@ public sealed partial class MigrationEngine
                 var errs = errors.Count > 0 ? errors : new List<StageError> { StageError.FromException(Stage, "", "", ex) };
                 await ctx.ToolMigStageAsync(Stage, "Failed", ex.Message, errs.Count);
                 ctx.Engine.WriteStageReport(ctx.RunDir, Stage.ToString(), errs);
+                ctx.Engine.UpdateRunIndexHtml(ctx.RunDir);
                 throw;
             }
         }
